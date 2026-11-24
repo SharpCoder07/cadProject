@@ -1,0 +1,884 @@
+import type { Metadata } from "next";
+import Image from "next/image";
+import Link from "next/link";
+import { notFound } from "next/navigation";
+import {
+  ArrowRight, BadgeCheck, BookOpen, Building2, CalendarClock, Check, CheckCircle2, Cloud, Columns3, ExternalLink, FileText, Gift, Headset, Layers,
+  ListChecks, MessageCircleQuestion, MonitorSmartphone, Scale, ShieldCheck, Sparkles, Star, Tag, ThumbsDown, ThumbsUp, Users, Wallet, X,
+} from "lucide-react";
+import { getCurrentUser } from "@/server/auth/session";
+import { getSettings } from "@/server/settings";
+import { approvedReviews, getPublishedSoftware, getSoftwareForPreview, relatedSoftware, specRows, subRatings } from "@/server/services/catalog";
+import { categoryTrail } from "@/server/services/categories";
+import { listPublishedPosts } from "@/server/services/blog";
+import { publishedQuestions } from "@/server/services/questions";
+import { authorisedResellers } from "@/server/services/resellers";
+import { buildMetadata } from "@/server/seo/metadata";
+import { faqLd, softwareLd } from "@/server/seo/jsonld";
+import { formatDate, formatPrice, toNumber } from "@/lib/format";
+import { cn } from "@/lib/utils";
+import { Alert, Stars } from "@/components/ui/misc";
+import { Breadcrumbs } from "@/components/site/breadcrumbs";
+import { JsonLd } from "@/components/site/json-ld";
+import { SoftwareLogo, SoftwareTile } from "@/components/site/software-card";
+import { CompareCheckbox } from "@/components/site/compare-controls";
+import { EnquireButton } from "@/components/site/lead-dialog";
+import { LeadForm } from "@/components/site/lead-form";
+import { Gallery } from "@/components/site/gallery";
+import { ReviewForm } from "@/components/site/review-form";
+import { QuestionForm } from "@/components/site/question-form";
+import { ViewBeacon } from "@/components/site/view-beacon";
+import { FavouriteButton } from "@/components/site/favourite-button";
+import { currentOffers } from "@/server/services/offers";
+import { productTerms } from "@/server/services/taxonomies";
+import { taxonomyDef } from "@/lib/taxonomies";
+import { makeT } from "@/lib/site-texts";
+import { getT } from "@/server/texts";
+import { Fragment } from "react";
+import { pageLayout, layoutForEdit } from "@/lib/layouts";
+import { billingLabel, deploymentLabel, pricingLabel } from "@/lib/enum-labels";
+import { compareUrl } from "@/lib/compare";
+import { EditRegion, PageEditActions } from "@/components/site/edit-mode";
+import { productRegion } from "@/lib/edit-regions";
+
+type Props = { params: Promise<{ slug: string }>; searchParams: Promise<{ preview?: string; reviews?: string }> };
+
+async function load(slug: string, preview: boolean) {
+  if (preview) {
+    const user = await getCurrentUser();
+    if (user && (user.permissions.has("software.view") || user.vendorId)) {
+      const sw = await getSoftwareForPreview(slug);
+      if (sw && (!user.vendorId || sw.vendorId === user.vendorId)) return { sw, isPreview: sw.status !== "PUBLISHED" };
+    }
+  }
+  const sw = await getPublishedSoftware(slug);
+  return sw ? { sw, isPreview: false } : null;
+}
+
+export async function generateMetadata({ params, searchParams }: Props): Promise<Metadata> {
+  const { slug } = await params;
+  const r = await load(slug, (await searchParams).preview === "1");
+  if (!r) return {};
+  const { sw } = r;
+  const price = toNumber(sw.startingPrice);
+  const year = new Date().getFullYear();
+  const t = await getT();
+  return buildMetadata({
+    path: `/software/${sw.slug}`,
+    title: t("product.seoTitle", { name: sw.name, year }),
+    description: sw.shortDescription ?? t("product.seoDescription", { name: sw.name, vendor: sw.vendor ? ` by ${sw.vendor.name}` : "", tagline: sw.tagline ?? "", price: price ? t("product.seoPrice", { price: formatPrice(price) }) : "" }).replace(/\s+/g, " ").trim(),
+    // Logos are small squares, so social shares use the branded card unless an SEO image is set.
+    seo: sw.seo,
+    noIndex: r.isPreview,
+  });
+}
+
+/* ─── Building blocks ───────────────────────────────────────────────────── */
+
+/** One full-width white section card: small orange label, big heading, content. */
+function Section({ id, eyebrow, title, action, children, className }: { id: string; eyebrow: string; title: React.ReactNode; action?: React.ReactNode; children: React.ReactNode; className?: string }) {
+  return (
+    <section id={id} aria-labelledby={`${id}-h`} className={cn("scroll-mt-44 rounded-[1.75rem] border border-line bg-surface p-5 shadow-[0_24px_60px_-48px_rgb(var(--color-ink)/0.4)] sm:p-8", className)}>
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-accent">{eyebrow}</p>
+          <h2 id={`${id}-h`} className="mt-1 text-[1.5rem] font-extrabold leading-tight tracking-[-0.01em] text-ink sm:text-[1.9rem]">{title}</h2>
+        </div>
+        {action}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/** "% of reviewers recommend" ring. */
+function Ring({ pct }: { pct: number | null }) {
+  const r = 34;
+  const c = 2 * Math.PI * r;
+  return (
+    <svg viewBox="0 0 80 80" className="h-24 w-24" aria-hidden>
+      <circle cx="40" cy="40" r={r} fill="none" stroke="rgb(var(--color-line))" strokeWidth="8" />
+      {pct !== null && <circle className="cg-ring-arc" cx="40" cy="40" r={r} fill="none" stroke="rgb(var(--color-success))" strokeWidth="8" strokeLinecap="round" strokeDasharray={`${(pct / 100) * c} ${c}`} transform="rotate(-90 40 40)" />}
+      <text x="40" y="45" textAnchor="middle" className="fill-ink" style={{ font: "800 17px var(--font-display, sans-serif)" }} {...(pct !== null ? { "data-countup": "" } : {})}>{pct === null ? "—" : `${pct}%`}</text>
+    </svg>
+  );
+}
+
+const ASPECTS = ["ease", "value", "support", "features"] as const;
+
+/* ─── Page ──────────────────────────────────────────────────────────────── */
+
+/**
+ * Product page (cadgram.com/details style): hero card with media, summary, offers and price card;
+ * trust strip; sticky tabs; then one full-width card per section — description, pricing, gallery,
+ * features, specifications, review (recommend ring, scores, editorial pros/cons, buyer reviews),
+ * who should choose it, company, compare, FAQs, questions, alternatives — and expert guidance.
+ */
+export default async function SoftwarePage({ params, searchParams }: Props) {
+  const { slug } = await params;
+  const sp = await searchParams;
+  const r = await load(slug, sp.preview === "1");
+  if (!r) notFound();
+  const { sw, isPreview } = r;
+  const settings = await getSettings();
+  const { labels, detail } = settings;
+  const t = makeT(settings.texts);
+  // Sections, their order and visibility: Pages › Page layouts (the old Product pages switches are the defaults until it is saved).
+  const legacy = detail.sections;
+  const layoutDefaults = { overview: legacy.overview, features: legacy.features, gallery: legacy.screenshots, pricing: legacy.pricing, specifications: legacy.specifications, faqs: legacy.faqs, reviews: legacy.reviews, alternatives: legacy.alternatives, vendor: legacy.vendor, articles: legacy.relatedArticles };
+  const layout = pageLayout("product", settings.layouts.product, layoutDefaults);
+  const show = { overview: layout.show("overview"), features: layout.show("features"), screenshots: layout.show("gallery"), pricing: layout.show("pricing"), specifications: layout.show("specifications"), faqs: layout.show("faqs"), reviews: layout.show("reviews"), alternatives: layout.show("alternatives"), vendor: layout.show("vendor"), relatedArticles: layout.show("articles") };
+  const reviewPage = Math.max(1, Number(sp.reviews) || 1);
+
+  const [trail, alternatives, reviews, posts, allOffers, allTermGroups, aspectMap, questions, resellers] = await Promise.all([
+    sw.primaryCategory ? categoryTrail(sw.primaryCategory) : Promise.resolve([]),
+    show.alternatives || layout.show("compare") ? relatedSoftware(sw, "ALTERNATIVE", 6) : Promise.resolve([]),
+    show.reviews && settings.reviews.enabled ? approvedReviews(sw.id, reviewPage) : Promise.resolve(null),
+    show.relatedArticles ? listPublishedPosts({ softwareId: sw.id, perPage: 3 }) : Promise.resolve(null),
+    currentOffers(sw.id),
+    productTerms(sw.id),
+    subRatings([sw.id]),
+    publishedQuestions(sw.id),
+    authorisedResellers(sw.id, sw.slug),
+  ]);
+  // Lists switched off in Website settings › Classification lists don't show.
+  const termGroups = allTermGroups.filter((g) => taxonomyDef(g.kind, settings.taxonomies).enabled);
+  const aspects = aspectMap.get(sw.id);
+  const recommend = reviews && reviews.total ? Math.round((((reviews.distribution[5] ?? 0) + (reviews.distribution[4] ?? 0)) / reviews.total) * 100) : null;
+  const now = new Date();
+  const offers = allOffers.filter((o) => new Date(o.startsAt) <= now && (!o.endsAt || new Date(o.endsAt) > now));
+  const specs = show.specifications ? specRows(sw) : [];
+  const screenshots = sw.media.filter((m) => m.kind === "SCREENSHOT" && m.media);
+  const videos = sw.media.filter((m) => m.kind === "VIDEO" && m.videoUrl);
+  const documents = sw.media.filter((m) => m.kind === "DOCUMENT" && m.media);
+  const rating = toNumber(sw.ratingAvg) ?? 0;
+  const price = toNumber(sw.startingPrice);
+  const pros = sw.pros ?? [];
+  const cons = sw.cons ?? [];
+  const bestFor = sw.bestFor ?? null;
+  const notIdealFor = sw.notIdealFor ?? null;
+  const leadConfig = { consentText: settings.leads.consentText, companySizes: settings.leads.companySizes, successMessage: labels.leadSuccess, submitLabel: labels.enquireCta, requireCompany: settings.leads.requireCompany };
+  const priceText = price && price > 0 ? formatPrice(price, sw.currency) : sw.pricingModel === "FREE" ? t("product.free") : t("product.priceOnRequest");
+  const hasSpecs = specs.length > 0 || sw.deployment.length > 0 || termGroups.length > 0 || sw.industries.length > 0;
+  const compareWith = alternatives.slice(0, 4);
+
+  const nav = [
+    { id: "overview", label: t("product.tabOverview"), on: show.overview && !!sw.description },
+    { id: "pricing", label: t("product.tabPricing"), on: show.pricing },
+    { id: "gallery", label: t("product.tabGallery"), on: show.screenshots && (screenshots.length > 0 || videos.length > 0 || documents.length > 0) },
+    { id: "features", label: t("product.tabFeatures"), on: show.features && sw.features.length > 0 },
+    { id: "specifications", label: t("product.tabSpecifications"), on: hasSpecs },
+    { id: "reviews", label: t("product.tabReviews"), on: Boolean(reviews) || pros.length > 0 || cons.length > 0 },
+    { id: "resellers", label: t("product.tabResellers"), on: resellers.length > 0 },
+    { id: "compare", label: t("product.tabCompare"), on: compareWith.length > 0 },
+    { id: "faqs", label: t("product.tabFaqs"), on: show.faqs && sw.faqs.length > 0 },
+    { id: "questions", label: t("product.tabQuestions"), on: true },
+    { id: "alternatives", label: t("product.tabAlternatives"), on: alternatives.length > 0 },
+  ]
+    .filter((n) => n.on && layout.show(n.id))
+    .sort((a, b) => layout.rank(a.id) - layout.rank(b.id));
+
+  // Page sections in the order set in Pages › Page layouts.
+  const blocks: Record<string, React.ReactNode> = {
+    overview: (
+      <>
+              {show.overview && sw.description && (
+                <Section id="overview" eyebrow={t("product.overviewEyebrow")} title={t("product.overviewTitle", { name: sw.name })}>
+                  <div className="prose-content !max-w-4xl" dangerouslySetInnerHTML={{ __html: sw.description }} />
+                </Section>
+              )}
+      </>
+    ),
+    pricing: (
+      <>
+              {show.pricing && (
+                <Section id="pricing" eyebrow={t("product.pricingEyebrow")} title={t("product.pricingTitle", { name: sw.name })}>
+                  {sw.plans.length > 0 ? (
+                    <>
+                      <div data-play className="grid gap-4 pt-1 md:grid-cols-2 xl:grid-cols-3">
+                        {sw.plans.map((p) => {
+                          const pp = toNumber(p.price);
+                          return (
+                            <div key={p.id} className={cn("relative flex flex-col rounded-2xl border p-5", p.isPopular ? "cg-beam border-primary bg-primary-soft/30 shadow-[0_20px_48px_-24px_rgb(var(--color-primary)/0.6)] ring-1 ring-primary" : "border-line bg-surface")}>
+                              {p.isPopular && <span className="absolute -top-3 left-5 rounded-control bg-accent px-2.5 py-0.5 text-xs font-bold text-accent-fg">{t("product.planPopular")}</span>}
+                              <p className="font-bold text-ink">{p.name}</p>
+                              <p className="mt-2 font-display text-[1.75rem] font-extrabold text-ink">
+                                {pp === null ? t("product.planCustom") : formatPrice(pp, p.currency)}
+                                {pp !== null && pp > 0 && <span className="ml-1 font-sans text-sm font-normal text-muted">{p.priceUnit ?? billingLabel(t, p.billingPeriod)}</span>}
+                              </p>
+                              {p.description && <p className="mt-1 text-sm text-muted">{p.description}</p>}
+                              {p.features.length > 0 && (
+                                <ul className="mt-4 space-y-1.5 text-sm">
+                                  {p.features.map((f, i) => (
+                                    <li key={f} className="cg-tick flex gap-2" style={{ ["--i" as string]: i }}><Check className="mt-0.5 h-4 w-4 shrink-0 text-success" aria-hidden /> {f}</li>
+                                  ))}
+                                </ul>
+                              )}
+                              <EnquireButton softwareSlugs={[sw.slug]} productName={`${sw.name} — ${p.name}`} source="PRODUCT_PAGE" className={cn("mt-5 h-10 rounded-xl text-sm font-bold", p.isPopular ? "bg-accent text-accent-fg hover:brightness-95" : "border border-primary text-primary hover:bg-primary hover:text-primary-fg")}>
+                                {p.ctaLabel || t("product.planCta")}
+                              </EnquireButton>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <p className="mt-4 text-xs text-muted">{sw.priceIncludesGst ? t("product.pricesIncl") : t("product.pricesExcl")} {t("product.pricesNote")}</p>
+                    </>
+                  ) : (
+                    <div className="rounded-2xl bg-[linear-gradient(180deg,rgb(var(--color-primary-soft)/0.7),rgb(var(--color-bg)))] p-5 sm:p-8">
+                      <div className="mx-auto max-w-xl overflow-hidden rounded-2xl border border-line bg-surface shadow-[0_24px_50px_-30px_rgb(var(--color-ink)/0.45)]">
+                        <div className="flex items-center justify-between gap-3 bg-primary px-5 py-3 text-primary-fg">
+                          <span className="rounded-full bg-white/20 px-2.5 py-0.5 text-[11px] font-bold">{t("product.quoteBadge")}</span>
+                          <span className="font-display font-bold">{t("product.quoteTitle")}</span>
+                        </div>
+                        <div className="grid gap-4 p-5 sm:grid-cols-[1fr_11rem]">
+                          <div>
+                            <p className="text-sm font-bold text-ink">{t("product.quoteHighlights")}</p>
+                            <ul className="mt-2 space-y-1.5 text-sm text-ink">
+                              {[t("product.quotePoint1"), t("product.quotePoint2"), t("product.quotePoint3")].filter(Boolean).map((x) => (
+                                <li key={x} className="flex gap-2"><Check className="mt-0.5 h-4 w-4 shrink-0 text-success" aria-hidden /> {x}</li>
+                              ))}
+                            </ul>
+                          </div>
+                          <dl className="space-y-2 text-sm">
+                            <div className="rounded-xl bg-bg px-3 py-2"><dt className="text-xs text-muted">{t("product.pricingModel")}</dt><dd className="font-semibold">{pricingLabel(t, sw.pricingModel)}</dd></div>
+                            <div className="rounded-xl bg-bg px-3 py-2"><dt className="text-xs text-muted">{t("product.freeTrial")}</dt><dd className="font-semibold">{sw.hasFreeTrial ? t("product.available") : t("product.askVendor")}</dd></div>
+                          </dl>
+                        </div>
+                        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-5 py-4">
+                          <span><span className="block text-xs text-muted">{t("product.startingPrice")}</span><span className="font-display text-lg font-extrabold text-ink">{priceText}</span></span>
+                          <EnquireButton type="QUOTE" softwareSlugs={[sw.slug]} productName={sw.name} source="PRODUCT_PAGE" title={t("product.quoteFormTitle", { name: sw.name })} className="inline-flex h-10 items-center rounded-xl bg-primary px-5 text-sm font-bold text-primary-fg hover:bg-primary/90">{t("product.quoteCta")}</EnquireButton>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </Section>
+              )}
+      </>
+    ),
+    gallery: (
+      <>
+              {show.screenshots && (screenshots.length > 0 || videos.length > 0 || documents.length > 0) && (
+                <Section id="gallery" eyebrow={t("product.galleryEyebrow")} title={t("product.galleryTitle", { name: sw.name })}>
+                  {(screenshots.length > 0 || videos.length > 0) && (
+                    <Gallery
+                      images={screenshots.map((m) => ({ url: m.media!.url, alt: m.media!.alt ?? m.caption ?? `${sw.name} screenshot`, caption: m.caption, width: m.media!.width, height: m.media!.height }))}
+                      videos={videos.map((v) => ({ url: v.videoUrl!, caption: v.caption }))}
+                    />
+                  )}
+                  {documents.length > 0 && (
+                    <ul className="mt-5 flex flex-wrap gap-3">
+                      {documents.map((d) => (
+                        <li key={d.id}>
+                          <a href={d.media!.url} target="_blank" rel="noopener" className="inline-flex items-center gap-2 rounded-xl border border-line bg-bg px-3.5 py-2.5 text-sm font-semibold hover:border-primary hover:text-primary">
+                            <FileText className="h-4 w-4 text-primary" aria-hidden /> {d.caption ?? d.media!.filename}
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </Section>
+              )}
+      </>
+    ),
+    features: (
+      <>
+              {show.features && sw.features.length > 0 && (
+                <Section id="features" eyebrow={t("product.featuresEyebrow")} title={t("product.featuresTitle", { name: sw.name })}>
+                  <ul data-play className="grid gap-3 sm:grid-cols-2">
+                    {sw.features.map((f, i) => (
+                      <li key={f.id} className="cg-tick flex gap-3 rounded-2xl border border-line bg-bg/60 p-4" style={{ ["--i" as string]: i }}>
+                        <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-success/10"><Check className="h-4 w-4 text-success" aria-hidden /></span>
+                        <div>
+                          <p className="font-bold text-ink">{f.title}</p>
+                          {f.description && <p className="mt-0.5 text-sm text-muted">{f.description}</p>}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </Section>
+              )}
+      </>
+    ),
+    specifications: (
+      <>
+              {hasSpecs && (
+                <Section id="specifications" eyebrow={t("product.specsEyebrow")} title={t("product.specsTitle", { name: sw.name })}>
+                  <dl className="grid overflow-hidden rounded-2xl border border-line sm:grid-cols-2">
+                    {(
+                      [
+                        ...(sw.deployment.length ? [{ Icon: Cloud, label: t("product.specDeployment"), value: sw.deployment.map((d) => deploymentLabel(t, d)).join(", ") }] : []),
+                        { Icon: Wallet, label: t("product.pricingModel"), value: pricingLabel(t, sw.pricingModel) },
+                        { Icon: Gift, label: t("product.freeTrial"), value: sw.hasFreeTrial ? t("product.available") : t("product.notAvailable") },
+                        { Icon: Sparkles, label: t("product.freeVersion"), value: sw.hasFreeVersion ? t("product.available") : t("product.notAvailable") },
+                        ...(sw.industries.length ? [{ Icon: Building2, label: t("product.specIndustries"), value: sw.industries.map((i) => i.industry.name).join(", ") }] : []),
+                        ...termGroups.map((g) => ({ Icon: Layers, label: taxonomyDef(g.kind, settings.taxonomies).productLabel, value: g.terms.map((t) => t.name).join(", ") })),
+                        ...specs.flatMap((g) => g.rows.map((row) => ({ Icon: MonitorSmartphone, label: row.label, value: String(row.value) }))),
+                      ] as { Icon: typeof Cloud; label: string; value: string }[]
+                    ).map(({ Icon: I, label, value }, i) => (
+                      <div key={`${i}-${label}`} className="border-b border-line p-4 sm:odd:border-r">
+                        <dt className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wide text-muted"><I className="h-4 w-4" aria-hidden /> {label}</dt>
+                        <dd className="mt-1 font-semibold text-ink">{value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                  {termGroups.length > 0 && (
+                    <div className="mt-4 flex flex-wrap gap-1.5">
+                      {termGroups.flatMap((g) =>
+                        g.terms.map((t) => (
+                          <Link key={`${g.kind}-${t.slug}`} href={`/${taxonomyDef(g.kind, settings.taxonomies).path}/${t.slug}`} className="rounded-full bg-bg px-3 py-1 text-xs font-semibold text-ink ring-1 ring-line hover:text-primary hover:ring-primary/40">{t.name}</Link>
+                        )),
+                      )}
+                    </div>
+                  )}
+                </Section>
+              )}
+      </>
+    ),
+    reviews: (
+      <>
+              {(reviews || pros.length > 0 || cons.length > 0) && (
+                <Section id="reviews" eyebrow={t("product.reviewsEyebrow")} title={t("product.reviewsTitle", { name: sw.name })}>
+                  {reviews && (
+                    <div data-play className="grid gap-4 rounded-2xl bg-bg p-4 md:grid-cols-2 xl:grid-cols-[1fr_1fr_1.4fr_1.2fr]">
+                      <div className="flex flex-col items-center justify-center rounded-2xl bg-surface p-5 text-center ring-1 ring-line">
+                        <Ring pct={recommend} />
+                        <p className="mt-2 text-sm text-muted">{t("product.recommendLabel")}</p>
+                      </div>
+                      <div className="flex flex-col items-center justify-center rounded-2xl bg-surface p-5 text-center ring-1 ring-line">
+                        <p className="text-sm text-muted">{t("product.overallScore")}</p>
+                        <p className="mt-1 font-display text-4xl font-extrabold text-ink">{sw.ratingCount ? <span data-countup>{rating.toFixed(1)}</span> : "—"}<span className="text-lg text-muted">/5</span></p>
+                        <Stars value={rating} size="md" className="mt-1 justify-center" />
+                        <p className="mt-1 text-xs text-muted">{t(sw.ratingCount === 1 ? "product.basedOnOne" : "product.basedOn", { count: sw.ratingCount })}</p>
+                      </div>
+                      <div className="rounded-2xl bg-surface p-5 ring-1 ring-line">
+                        <ul className="space-y-3">
+                          {(["features", "value", "ease", "support"] as const).map((k, i) => {
+                            const v = aspects?.[k] ?? null;
+                            return (
+                              <li key={k}>
+                                <span className="flex justify-between text-sm"><span className="text-ink">{t(`product.aspect${k.charAt(0).toUpperCase()}${k.slice(1)}`)}</span><span className="font-bold text-ink">{v ? v.toFixed(1) : "—"}</span></span>
+                                <span className="mt-1 block h-1.5 overflow-hidden rounded-full bg-line" aria-hidden><span className="cg-sbar block h-full rounded-full bg-primary" style={{ width: `${v ? (v / 5) * 100 : 0}%`, ["--i" as string]: i }} /></span>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                      <div className="flex flex-col items-center justify-center rounded-2xl bg-surface p-5 text-center ring-1 ring-line">
+                        <p className="font-bold text-ink">{t("product.reviewBoxTitle")}</p>
+                        <p className="mt-1 text-sm text-muted">{t("product.reviewBoxText")}</p>
+                        <a href="#write-review" className="mt-3 inline-flex h-10 items-center rounded-xl border border-primary px-4 text-sm font-bold text-primary hover:bg-primary hover:text-primary-fg">{t("product.reviewBoxLink")}</a>
+                      </div>
+                    </div>
+                  )}
+
+                  {(pros.length > 0 || cons.length > 0) && (
+                    <div className="mt-6">
+                      <h3 className="text-lg font-bold text-ink">{t("product.prosConsTitle")}</h3>
+                      <div className="mt-3 grid gap-4 md:grid-cols-2">
+                        <div className="rounded-2xl border border-success/25 bg-success/5 p-5">
+                          <p className="flex items-center gap-2 font-bold text-success"><ThumbsUp className="h-4 w-4" aria-hidden /> Pros</p>
+                          <ul className="mt-2 space-y-1.5 text-sm text-ink">
+                            {pros.length ? pros.map((p) => <li key={p} className="flex gap-2"><Check className="mt-0.5 h-4 w-4 shrink-0 text-success" aria-hidden /> {p}</li>) : <li className="text-muted">—</li>}
+                          </ul>
+                        </div>
+                        <div className="rounded-2xl border border-danger/25 bg-danger/5 p-5">
+                          <p className="flex items-center gap-2 font-bold text-danger"><ThumbsDown className="h-4 w-4" aria-hidden /> Cons</p>
+                          <ul className="mt-2 space-y-1.5 text-sm text-ink">
+                            {cons.length ? cons.map((c) => <li key={c} className="flex gap-2"><X className="mt-0.5 h-4 w-4 shrink-0 text-danger" aria-hidden /> {c}</li>) : <li className="text-muted">—</li>}
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {reviews && (
+                    <>
+                      {reviews.total > 0 && (
+                        <div className="mt-8">
+                          <div className="flex flex-wrap items-end justify-between gap-3">
+                            <h3 className="text-lg font-bold text-ink">{t("product.buyersSay")}</h3>
+                            <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
+                              {[5, 4, 3, 2, 1].map((star) => (
+                                <li key={star}>{star}★ <span className="font-semibold text-ink">{reviews.distribution[star] ?? 0}</span></li>
+                              ))}
+                            </ul>
+                          </div>
+                          <ul className="mt-4 space-y-4">
+                            {reviews.items.map((rv) => (
+                              <li key={rv.id} className="rounded-2xl border border-line p-5">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <span className="flex items-center gap-3">
+                                    <span className="grid h-10 w-10 place-items-center rounded-full bg-primary-soft font-display font-bold text-primary" aria-hidden>{rv.authorName.slice(0, 1).toUpperCase()}</span>
+                                    <span>
+                                      <span className="block text-sm font-bold">{rv.authorName}</span>
+                                      <span className="block text-xs text-muted">{[rv.authorRole, rv.companyName].filter(Boolean).join(", ") || t("product.verifiedReviewer")}</span>
+                                    </span>
+                                  </span>
+                                  <span className="text-right"><Stars value={rv.rating} /><span className="block text-xs text-muted">{formatDate(rv.createdAt)}</span></span>
+                                </div>
+                                <p className="mt-3 font-bold text-ink">{rv.title}</p>
+                                <p className="mt-1 whitespace-pre-line text-sm text-ink/90">{rv.body}</p>
+                                {(rv.pros || rv.cons) && (
+                                  <div className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
+                                    {rv.pros && <p className="rounded-xl bg-success/5 p-3"><span className="block font-semibold text-success">{t("product.pros")}</span>{rv.pros}</p>}
+                                    {rv.cons && <p className="rounded-xl bg-danger/5 p-3"><span className="block font-semibold text-danger">{t("product.cons")}</span>{rv.cons}</p>}
+                                  </div>
+                                )}
+                                <p className="mt-3 inline-flex items-center gap-1 text-xs text-muted"><BadgeCheck className="h-3.5 w-3.5 text-success" aria-hidden /> Verified reviewer{rv.companySize && ` · ${rv.companySize} employees`}</p>
+                                {rv.vendorReply && (
+                                  <div className="mt-3 rounded-xl border-l-4 border-primary bg-primary-soft/50 px-4 py-3 text-sm">
+                                    <p className="text-xs font-semibold text-primary">{t("product.vendorReply", { company: sw.vendor?.name ?? t("product.theVendor") })}{rv.vendorReplyAt ? ` · ${formatDate(rv.vendorReplyAt)}` : ""}</p>
+                                    <p className="mt-1 whitespace-pre-line text-ink">{rv.vendorReply}</p>
+                                  </div>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                          {reviews.total > reviewPage * 10 && (
+                            <Link href={`/software/${sw.slug}?reviews=${reviewPage + 1}#reviews`} className="mt-4 inline-flex h-9 items-center gap-1 rounded-control border border-primary/30 px-4 text-sm font-semibold text-primary hover:bg-primary hover:text-primary-fg">{t("product.moreReviews")}</Link>
+                          )}
+                        </div>
+                      )}
+                      <div id="write-review" className="mt-8 scroll-mt-48 rounded-2xl border border-line bg-bg p-5">
+                        <h3 className="text-lg font-bold text-ink">{t("product.writeTitle", { name: sw.name })}</h3>
+                        <p className="mt-1 text-sm text-muted">{t("product.writeText")}</p>
+                        <ReviewForm softwareSlug={sw.slug} minBodyLength={settings.reviews.minBodyLength} companySizes={settings.leads.companySizes} />
+                      </div>
+                    </>
+                  )}
+                </Section>
+              )}
+      </>
+    ),
+    fit: (
+      <>
+              {(bestFor || notIdealFor) && (
+                <Section id="fit" eyebrow={t("product.fitEyebrow")} title={t("product.fitTitle", { name: sw.name })}>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    {bestFor && (
+                      <div className="rounded-2xl border border-line bg-[linear-gradient(180deg,rgb(var(--color-success)/0.08),transparent)] p-6">
+                        <p className="flex items-center gap-2 text-xl font-extrabold text-ink"><CheckCircle2 className="h-6 w-6 text-success" aria-hidden /> Best for</p>
+                        <p className="mt-3 text-[15px] leading-relaxed text-ink/85">{bestFor}</p>
+                      </div>
+                    )}
+                    {notIdealFor && (
+                      <div className="rounded-2xl border border-line bg-[linear-gradient(180deg,rgb(var(--color-danger)/0.07),transparent)] p-6">
+                        <p className="flex items-center gap-2 text-xl font-extrabold text-ink"><Scale className="h-6 w-6 text-danger" aria-hidden /> Not ideal for</p>
+                        <p className="mt-3 text-[15px] leading-relaxed text-ink/85">{notIdealFor}</p>
+                      </div>
+                    )}
+                  </div>
+                </Section>
+              )}
+      </>
+    ),
+    vendor: (
+      <>
+              {show.vendor && sw.vendor && (
+                <Section id="vendor" eyebrow={t("product.vendorEyebrow")} title={t("product.vendorTitle", { company: sw.vendor.name })} action={<Link href={`/vendors/${sw.vendor.slug}`} className="inline-flex h-9 items-center gap-1 rounded-control border border-primary/30 px-4 text-sm font-semibold text-primary hover:bg-primary hover:text-primary-fg">{t("product.vendorLink")} <ArrowRight className="h-4 w-4" aria-hidden /></Link>}>
+                  <dl className="divide-y divide-line overflow-hidden rounded-2xl border border-line text-sm">
+                    {(
+                      [
+                        [t("product.factBrand"), sw.brand?.isActive ? sw.brand.name : null],
+                        [t("product.factCompany"), sw.vendor.name],
+                        [t("product.factVerification"), sw.vendor.verification === "VERIFIED" ? labels.verifiedLabel : null],
+                        [t("product.factFounded"), sw.vendor.foundedYear ? String(sw.vendor.foundedYear) : null],
+                        [t("product.factHq"), [sw.vendor.city, sw.vendor.country].filter(Boolean).join(", ") || null],
+                        [t("product.factSize"), sw.vendor.employeeRange ? t("product.employees", { range: sw.vendor.employeeRange }) : null],
+                        [t("product.factPhone"), detail.showVendorContact ? sw.vendor.phone : null],
+                        [t("product.factAbout"), sw.vendor.description],
+                      ] as [string, string | null][]
+                    )
+                      .filter((r): r is [string, string] => Boolean(r[1]))
+                      .map(([k, v]) => (
+                        <div key={k} className="grid gap-1 px-5 py-3.5 sm:grid-cols-[12rem_1fr]">
+                          <dt className="font-semibold text-ink">{k}</dt>
+                          <dd className="text-muted">{v}</dd>
+                        </div>
+                      ))}
+                  </dl>
+                </Section>
+              )}
+      </>
+    ),
+    resellers: (
+      <>
+              {resellers.length > 0 && (
+                <Section
+                  id="resellers"
+                  eyebrow={t("product.resellersEyebrow")}
+                  title={t("product.resellersTitle", { name: sw.name })}
+                  action={
+                    <EnquireButton softwareSlugs={[sw.slug]} productName={t("product.resellersForm", { name: sw.name })} source="PRODUCT_PAGE" className="inline-flex h-9 items-center gap-1 rounded-control border border-primary/30 px-4 text-sm font-semibold text-primary hover:bg-primary hover:text-primary-fg">
+                      {t("product.resellersCta")} <ArrowRight className="h-4 w-4" aria-hidden />
+                    </EnquireButton>
+                  }
+                >
+                  <p className="-mt-2 mb-5 text-sm text-muted">{t("product.resellersText", { name: sw.name })}</p>
+                  <ul className="grid gap-3 sm:grid-cols-2">
+                    {resellers.map(({ reseller: rs, partnerLevel }) => (
+                      <li key={rs.slug} className="flex gap-3 rounded-2xl border border-line p-4">
+                        <span className="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-xl border border-line bg-white">
+                          {rs.logo ? (
+                            // eslint-disable-next-line @next/next/no-img-element -- small partner logo
+                            <img src={rs.logo.url} alt="" className="h-full w-full object-contain p-1.5" />
+                          ) : (
+                            <span className="text-base font-bold text-primary">{rs.name.slice(0, 1)}</span>
+                          )}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <Link href={`/resellers/${rs.slug}`} className="font-semibold text-ink hover:text-primary">{rs.name}</Link>
+                          <div className="mt-1 flex flex-wrap gap-1.5">
+                            {rs.verification === "VERIFIED" && <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-semibold text-success">{labels.verifiedLabel}</span>}
+                            {partnerLevel && <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary">{partnerLevel}</span>}
+                          </div>
+                          {(rs.serviceCities.length > 0 || rs.city) && (
+                            <p className="mt-1.5 line-clamp-2 text-xs text-muted">
+                              {rs.serviceCities.length ? t("product.serves", { cities: `${rs.serviceCities.slice(0, 6).join(", ")}${rs.serviceCities.length > 6 ? ` +${rs.serviceCities.length - 6}` : ""}` }) : [rs.city, rs.state].filter(Boolean).join(", ")}
+                            </p>
+                          )}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </Section>
+              )}
+      </>
+    ),
+    compare: (
+      <>
+              {compareWith.length > 0 && (
+                <Section id="compare" eyebrow={t("product.compareEyebrow")} title={t("product.compareTitle", { name: sw.name })}>
+                  <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                    {compareWith.map((a) => {
+                      const ar = toNumber(a.ratingAvg) ?? 0;
+                      const ap = toNumber(a.startingPrice);
+                      return (
+                        <li key={a.id} className="flex flex-col rounded-2xl border border-line p-4 transition hover:border-primary/40 hover:shadow-[0_18px_40px_-28px_rgb(var(--color-ink)/0.5)]">
+                          <div className="flex items-center gap-3">
+                            <SoftwareLogo logo={a.logo} name={a.name} size={44} />
+                            <div className="min-w-0">
+                              <Link href={`/software/${a.slug}`} className="block truncate font-bold text-ink hover:text-primary">{a.name}</Link>
+                              {a.primaryCategory && <span className="mt-0.5 inline-block rounded-full bg-primary-soft px-2 py-0.5 text-[10px] font-bold text-primary">{a.primaryCategory.name}</span>}
+                            </div>
+                          </div>
+                          {a.tagline && <p className="mt-3 line-clamp-2 text-sm text-muted">{a.tagline}</p>}
+                          <p className="mt-2 flex items-center gap-1.5 text-xs text-muted">
+                            <Stars value={ar} /> {a.ratingCount ? <span className="font-semibold text-ink">{ar.toFixed(1)} <span className="font-normal text-muted">({a.ratingCount})</span></span> : t("product.noReviews")}
+                          </p>
+                          <p className="mt-auto border-t border-line pt-3 text-xs text-muted">
+                            {a.hasFreeTrial ? t("product.freeTrial") : t("product.noTrial")} · {ap && ap > 0 ? formatPrice(ap, a.currency) : t("product.priceOnRequest")}
+                          </p>
+                          <Link href={compareUrl([sw.slug, a.slug])} className="mt-3 inline-flex h-9 items-center justify-center gap-1.5 rounded-xl bg-primary-soft text-sm font-bold text-primary transition hover:bg-primary hover:text-primary-fg">
+                            <Columns3 className="h-4 w-4" aria-hidden /> Compare
+                          </Link>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  {compareWith.length > 1 && (
+                    <Link href={compareUrl([sw.slug, ...compareWith.slice(0, 2).map((a) => a.slug)])} className="mt-5 inline-flex h-9 items-center gap-1 rounded-control border border-primary/30 px-4 text-sm font-semibold text-primary hover:bg-primary hover:text-primary-fg">
+                      Compare {sw.name}, {compareWith[0]!.name} and {compareWith[1]!.name} <ArrowRight className="h-4 w-4" aria-hidden />
+                    </Link>
+                  )}
+                </Section>
+              )}
+      </>
+    ),
+    faqs: (
+      <>
+              {show.faqs && sw.faqs.length > 0 && (
+                <Section id="faqs" eyebrow={t("product.faqsEyebrow")} title={t("product.faqsTitle", { name: sw.name })}>
+                  <div className="space-y-3">
+                    {sw.faqs.map((f) => (
+                      <details key={f.id} className="group rounded-2xl border border-line bg-bg/50 px-5 py-4 open:border-primary/30 open:bg-surface">
+                        <summary className="flex cursor-pointer list-none items-center justify-between gap-4 font-semibold text-ink">
+                          {f.question}
+                          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-primary-soft text-lg text-primary transition-transform group-open:rotate-45" aria-hidden>+</span>
+                        </summary>
+                        <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-muted">{f.answer}</p>
+                      </details>
+                    ))}
+                  </div>
+                </Section>
+              )}
+      </>
+    ),
+    questions: (
+      <>
+              <Section id="questions" eyebrow={t("product.questionsEyebrow")} title={t("product.questionsTitle", { name: sw.name })}>
+                {questions.length > 0 ? (
+                  <ul className="mb-5 space-y-3">
+                    {questions.map((q) => (
+                      <li key={q.id} className="rounded-2xl border border-line p-5">
+                        <p className="flex gap-2.5 font-bold text-ink"><MessageCircleQuestion className="mt-0.5 h-5 w-5 shrink-0 text-primary" aria-hidden /> {q.question}</p>
+                        <p className="mt-1 pl-7 text-xs text-muted">{t("product.askedBy", { name: q.authorName, date: formatDate(q.createdAt) })}</p>
+                        {q.answer && (
+                          <div className="mt-3 ml-7 rounded-xl bg-primary-soft/50 px-4 py-3 text-sm">
+                            <p className="text-xs font-bold text-primary">{t("product.answerFrom")}{q.answeredAt ? ` · ${formatDate(q.answeredAt)}` : ""}</p>
+                            <p className="mt-1 whitespace-pre-line text-ink">{q.answer}</p>
+                          </div>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="mb-4 text-sm text-muted">{t("product.noQuestions")}</p>
+                )}
+                <QuestionForm softwareSlug={sw.slug} productName={sw.name} />
+              </Section>
+      </>
+    ),
+    alternatives: (
+      <>
+              {alternatives.length > 0 && (
+                <Section id="alternatives" eyebrow={t("product.alternativesEyebrow")} title={t("product.alternativesTitle", { name: sw.name })}>
+                  <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                    {alternatives.map((a) => <SoftwareTile key={a.id} sw={a} labels={labels} />)}
+                  </div>
+                </Section>
+              )}
+      </>
+    ),
+    articles: (
+      <>
+              {posts && posts.items.length > 0 && (
+                <Section id="articles" eyebrow={t("product.articlesEyebrow")} title={t("product.articlesTitle", { name: sw.name })} action={<Link href="/blog" className="inline-flex h-9 items-center gap-1 rounded-control border border-primary/30 px-4 text-sm font-semibold text-primary hover:bg-primary hover:text-primary-fg">{t("product.articlesLink")} <ArrowRight className="h-4 w-4" aria-hidden /></Link>}>
+                  <ul className="grid gap-4 md:grid-cols-3">
+                    {posts.items.map((p) => (
+                      <li key={p.id}>
+                        <article className="group relative flex h-full flex-col overflow-hidden rounded-2xl border border-line transition hover:-translate-y-0.5 hover:shadow-[0_18px_40px_-26px_rgb(var(--color-ink)/0.45)]">
+                          <div className="relative aspect-[1200/630] bg-[linear-gradient(135deg,rgb(var(--color-primary-soft))_0%,rgb(var(--color-surface))_100%)]">
+                            {p.cover ? <Image src={p.cover.url} alt={p.cover.alt ?? ""} fill className="object-cover" sizes="33vw" /> : <span className="absolute inset-0 grid place-items-center text-primary/70" aria-hidden><BookOpen className="h-8 w-8" /></span>}
+                          </div>
+                          <div className="flex flex-1 flex-col p-4">
+                            <p className="text-xs text-muted">{formatDate(p.publishedAt)}{p.category && <span className="font-semibold text-accent"> · {p.category.name}</span>}</p>
+                            <h3 className="mt-1.5 line-clamp-3 font-bold leading-snug text-ink"><Link href={`/blog/${p.slug}`} className="after:absolute after:inset-0 group-hover:text-primary">{p.title}</Link></h3>
+                            <span className="mt-auto inline-flex items-center gap-1 pt-3 text-sm font-bold text-primary">{t("product.readArticle")} <ArrowRight className="h-4 w-4" aria-hidden /></span>
+                          </div>
+                        </article>
+                      </li>
+                    ))}
+                  </ul>
+                </Section>
+              )}
+      </>
+    ),
+    enquire: (
+      <>
+              <section id="enquire" className="scroll-mt-44 mb-6 overflow-hidden rounded-[1.75rem] border border-line bg-[linear-gradient(135deg,rgb(var(--color-primary-soft))_0%,rgb(var(--color-surface))_70%)] p-5 sm:p-8 lg:p-10">
+                <div className="grid gap-8 lg:grid-cols-[1fr_1.1fr] lg:items-center lg:gap-14">
+                  <div className="lg:pl-2">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-accent">{t("product.expertEyebrow")}</p>
+                    <h2 className="mt-2 text-[1.6rem] font-extrabold leading-tight text-ink sm:text-[2rem]">{t("product.expertTitle", { name: sw.name })}</h2>
+                    <p className="mt-6 max-w-md leading-relaxed text-muted lg:mt-10 lg:text-[17px]">{t("product.expertText")}</p>
+                    <ul className="mt-8 space-y-3.5 text-sm text-ink lg:mt-12 lg:space-y-5 lg:text-[15px]">
+                      {[t("product.expertPoint1"), t("product.expertPoint2"), t("product.expertPoint3"), t("product.expertPoint4")].filter(Boolean).map((t) => (
+                        <li key={t} className="flex items-center gap-2.5"><CheckCircle2 className="h-5 w-5 shrink-0 text-success" aria-hidden /> {t}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div className="rounded-2xl border border-line bg-surface p-5 shadow-[0_24px_50px_-30px_rgb(var(--color-ink)/0.45)] sm:p-6">
+                    <h3 className="text-lg font-bold text-ink">{labels.leadFormTitle}</h3>
+                    {labels.leadFormSubtitle && <p className="mt-1 text-sm text-muted">{labels.leadFormSubtitle}</p>}
+                    <div className="mt-4">
+                      <LeadForm config={leadConfig} softwareSlugs={[sw.slug]} source="PRODUCT_PAGE" compact requirementPlaceholder={t("product.expertPlaceholder", { name: sw.name })} />
+                    </div>
+                  </div>
+                </div>
+              </section>
+      </>
+    ),
+    why: (
+      <>
+              <section aria-labelledby="why-h" className="rounded-[1.75rem] border border-accent/25 bg-accent/5 p-5 sm:p-8">
+                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-accent">{t("product.whyEyebrow", { site: settings.site.name })}</p>
+                <h2 id="why-h" className="mt-1 text-[1.5rem] font-extrabold leading-tight text-ink sm:text-[1.9rem]">{t("product.whyTitle")}</h2>
+                <ul className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                  {[
+                    { Icon: ListChecks, title: t("product.why1Title"), text: t("product.why1Text") },
+                    { Icon: Columns3, title: t("product.why2Title"), text: t("product.why2Text") },
+                    { Icon: Users, title: t("product.why3Title"), text: t("product.why3Text") },
+                    { Icon: CalendarClock, title: t("product.why4Title"), text: t("product.why4Text") },
+                  ].map(({ Icon: I, title, text }) => (
+                    <li key={title} className="rounded-2xl border border-accent/20 bg-surface p-5">
+                      <I className="h-6 w-6 text-accent" aria-hidden />
+                      <p className="mt-3 font-bold text-ink">{title}</p>
+                      <p className="mt-1 text-sm text-muted">{text}</p>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+      </>
+    ),
+  };
+
+  const editRef = { id: sw.id, name: sw.name, vendorId: sw.vendorId ?? null };
+  return (
+    <>
+      <PageEditActions actions={[{ label: "Edit product", href: `/admin/software/${sw.id}`, primary: true }, { label: "Reviews", href: `/admin/reviews?q=${encodeURIComponent(sw.name)}` }, { label: "Offers", href: "/admin/offers" }, { label: "Product page texts", href: "/admin/cms/texts?group=product" }]} layout={layoutForEdit("product", settings.layouts.product, layoutDefaults)} />
+      <JsonLd data={softwareLd({ ...sw, vendor: sw.vendor ? { name: sw.vendor.name, website: sw.vendor.website } : null, brand: sw.brand?.isActive ? { name: sw.brand.name } : null, reviews: reviewPage === 1 ? reviews?.items : undefined })} />
+      {show.faqs && <JsonLd data={faqLd(sw.faqs)} />}
+      {!isPreview && <ViewBeacon slug={sw.slug} />}
+
+      <div className="bg-[linear-gradient(180deg,rgb(var(--color-primary-soft))_0%,rgb(var(--color-bg))_420px)] pb-14">
+        <div className="container pt-6 sm:pt-8">
+          {isPreview && (
+            <Alert tone="warning" title={`Preview — this listing is ${sw.status.toLowerCase().replace("_", " ")}`} className="mb-4">
+              Only signed-in staff can see this page. <Link href={`/admin/software/${sw.id}`} className="underline">Back to editor</Link>
+            </Alert>
+          )}
+
+          {/* Hero card */}
+          <EditRegion {...productRegion("hero", editRef)}>
+          <header className="grid gap-6 rounded-[1.75rem] border border-line bg-surface p-5 shadow-[0_30px_70px_-50px_rgb(var(--color-ink)/0.5)] sm:p-7 lg:grid-cols-[15rem_minmax(0,1fr)_20rem]">
+            <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-line bg-bg p-6">
+              <SoftwareLogo logo={sw.logo} name={sw.name} size={128} />
+              {screenshots.length > 0 ? (
+                <a href="#gallery" className="text-xs font-semibold text-primary hover:underline">{screenshots.length} screenshot{screenshots.length === 1 ? "" : "s"}</a>
+              ) : (
+                <span className="text-xs text-muted">{t("product.mediaLabel")}</span>
+              )}
+            </div>
+
+            <div className="min-w-0">
+              <Breadcrumbs items={[...trail.map((t) => ({ name: t.name, path: `/categories/${t.slug}` })), { name: sw.name, path: `/software/${sw.slug}` }]} />
+              <h1 className="mt-3 text-[2rem] font-extrabold leading-tight tracking-[-0.02em] text-ink sm:text-[2.5rem]">{sw.name}</h1>
+              {(sw.brand?.isActive || sw.vendor) && (
+                <p className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-muted">
+                  {sw.brand?.isActive ? (
+                    <>{t("product.by")} <Link href={`/brands/${sw.brand.slug}`} className="font-semibold text-primary hover:underline">{sw.brand.name}</Link></>
+                  ) : sw.vendor ? (
+                    <>{t("product.by")} <Link href={`/vendors/${sw.vendor.slug}`} className="font-semibold text-primary hover:underline">{sw.vendor.name}</Link></>
+                  ) : null}
+                  {sw.brand?.isActive && sw.vendor && <span>· {t("product.soldBy")} <Link href={`/vendors/${sw.vendor.slug}`} className="text-ink hover:text-primary">{sw.vendor.name}</Link></span>}
+                  {sw.vendor?.verification === "VERIFIED" && (
+                    <span className="inline-flex items-center gap-1 text-primary"><BadgeCheck className="h-4 w-4" aria-hidden /> {labels.verifiedLabel}</span>
+                  )}
+                </p>
+              )}
+              {sw.tagline && <p className="mt-3 text-[15px] font-semibold text-ink/80">{sw.tagline}</p>}
+              <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+                {sw.ratingCount > 0 ? (
+                  <a href="#reviews" className="inline-flex items-center gap-2">
+                    <span className="inline-flex items-center gap-1 rounded bg-success px-2 py-0.5 text-sm font-bold text-white">
+                      {rating.toFixed(1)} <Star className="h-3.5 w-3.5" fill="currentColor" strokeWidth={0} aria-hidden />
+                    </span>
+                    <Stars value={rating} />
+                    <span className="font-semibold text-primary hover:underline">{t(sw.ratingCount === 1 ? "product.reviewCountOne" : "product.reviewCount", { count: sw.ratingCount })}</span>
+                  </a>
+                ) : (
+                  <span className="text-muted">{t("product.reviewCount", { count: 0 })}</span>
+                )}
+                {reviews && <a href="#write-review" className="font-semibold text-primary hover:underline">{t("product.writeReview")}</a>}
+              </div>
+              {sw.shortDescription && <p className="mt-3 max-w-2xl text-[15px] leading-relaxed text-muted">{sw.shortDescription}</p>}
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {sw.hasFreeTrial && <span className="rounded-full bg-success/10 px-2.5 py-0.5 text-xs font-semibold text-success">{labels.freeTrialBadge}</span>}
+                {sw.hasFreeVersion && <span className="rounded-full bg-success/10 px-2.5 py-0.5 text-xs font-semibold text-success">{labels.freeVersionBadge}</span>}
+                {sw.isTrending && <span className="rounded-full bg-accent/15 px-2.5 py-0.5 text-xs font-semibold text-accent">{t("product.trending")}</span>}
+                {sw.primaryCategory && <Link href={`/categories/${sw.primaryCategory.slug}`} className="rounded-full bg-primary-soft px-2.5 py-0.5 text-xs font-semibold text-primary hover:underline">{sw.primaryCategory.name}</Link>}
+              </div>
+
+              {offers.length > 0 && (
+                <div id="offers" className="mt-5 scroll-mt-48 rounded-2xl border border-line bg-bg p-4">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-ink">{t("product.currentOffers")}</p>
+                  <ul className="mt-3 space-y-2">
+                    {offers.map((o) => (
+                      <li key={o.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl bg-surface px-3 py-2.5 text-sm ring-1 ring-line">
+                        <span className="rounded-md bg-primary-soft px-2 py-0.5 text-[11px] font-bold uppercase text-primary">{o.discount}</span>
+                        <span className="min-w-0 flex-1 font-semibold text-ink">{o.title}{o.couponCode && <span className="ml-2 rounded bg-bg px-1.5 py-0.5 font-mono text-xs ring-1 ring-line">{o.couponCode}</span>}</span>
+                        {o.endsAt && <span className="text-xs text-muted">{t("product.offerEnds", { date: formatDate(o.endsAt) })}</span>}
+                        {o.url ? (
+                          <a href={o.url} target="_blank" rel="noopener nofollow" className="inline-flex h-8 items-center rounded-lg bg-primary px-3 text-xs font-bold text-primary-fg hover:bg-primary/90">{t("product.viewOffer")}</a>
+                        ) : (
+                          <EnquireButton type="PURCHASE" softwareSlugs={[sw.slug]} productName={`${sw.name} — ${o.title}`} source="PRODUCT_PAGE" className="inline-flex h-8 items-center rounded-lg bg-primary px-3 text-xs font-bold text-primary-fg hover:bg-primary/90">{t("product.claimOffer")}</EnquireButton>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-col rounded-2xl border border-line bg-[linear-gradient(180deg,rgb(var(--color-primary-soft)/0.6)_0%,rgb(var(--color-surface))_60%)] p-5">
+              <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-muted">{t("product.startingFrom")}</p>
+              <p className="mt-1 font-display text-[1.7rem] font-extrabold leading-tight text-ink">
+                {priceText}
+                {price && price > 0 && sw.priceUnit ? <span className="ml-1 font-sans text-sm font-normal text-muted">{sw.priceUnit}</span> : null}
+              </p>
+              <p className="text-xs text-muted">{pricingLabel(t, sw.pricingModel)}{price && price > 0 ? (sw.priceIncludesGst ? ` · ${t("product.inclGst")}` : ` · ${t("product.exclGst")}`) : ""}</p>
+              <div className="mt-4 grid gap-2">
+                <EnquireButton type="QUOTE" softwareSlugs={[sw.slug]} productName={sw.name} source="PRODUCT_PAGE" className="h-11 rounded-xl bg-accent text-sm font-bold text-accent-fg hover:brightness-95">
+                  {labels.enquireCta}
+                </EnquireButton>
+                <EnquireButton type="DEMO" softwareSlugs={[sw.slug]} productName={sw.name} source="PRODUCT_PAGE" title={`${labels.demoCta}: ${sw.name}`} className="h-11 rounded-xl border border-primary text-sm font-semibold text-primary hover:bg-primary hover:text-primary-fg">
+                  {labels.demoCta}
+                </EnquireButton>
+                {sw.websiteUrl && (
+                  <a href={sw.websiteUrl} target="_blank" rel="noopener nofollow" className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl text-sm font-semibold text-muted hover:text-primary">
+                    {t("product.visitWebsite")} <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+                  </a>
+                )}
+              </div>
+              <ul className="mt-3 space-y-1.5 border-t border-line pt-3 text-xs text-muted">
+                <li className="flex items-center gap-2"><Check className="h-3.5 w-3.5 text-success" aria-hidden /> {t("product.perkDemo")}</li>
+                <li className="flex items-center gap-2"><Check className="h-3.5 w-3.5 text-success" aria-hidden /> {t("product.perkPrice")}</li>
+                {sw.hasFreeTrial && <li className="flex items-center gap-2"><Check className="h-3.5 w-3.5 text-success" aria-hidden /> {labels.freeTrialBadge}</li>}
+              </ul>
+              <div className="mt-auto flex flex-wrap items-center justify-between gap-2 pt-4">
+                <CompareCheckbox item={{ slug: sw.slug, name: sw.name, logoUrl: sw.logo?.url ?? null }} label={labels.compareCta} />
+                {!isPreview && <FavouriteButton slug={sw.slug} />}
+              </div>
+            </div>
+          </header>
+          </EditRegion>
+
+          {/* Trust strip */}
+          <ul className="mt-5 grid gap-3 sm:grid-cols-3">
+            {[
+              { Icon: ShieldCheck, title: sw.vendor?.verification === "VERIFIED" ? t("product.trust1Verified") : t("product.trust1Title"), text: t("product.trust1Text") },
+              { Icon: Columns3, title: t("product.trust2Title"), text: t("product.trust2Text") },
+              { Icon: Headset, title: t("product.trust3Title"), text: t("product.trust3Text") },
+            ].filter((x) => x.title).map(({ Icon: I, title, text }) => (
+              <li key={title} className="flex items-center gap-3 rounded-2xl border border-line bg-surface px-4 py-3">
+                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-primary-soft text-primary"><I className="h-4.5 w-4.5 h-[18px] w-[18px]" aria-hidden /></span>
+                <span><span className="block text-sm font-bold text-ink">{title}</span><span className="block text-xs text-muted">{text}</span></span>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        {/* Sticky tabs */}
+        {nav.length > 1 && (
+          <nav aria-label="On this page" className="sticky top-[7.6rem] z-20 mt-5 md:top-[4.6rem] lg:top-[7.6rem]">
+            <div className="container">
+              <ul className="flex gap-1 overflow-x-auto rounded-2xl border border-line bg-surface/95 px-2 shadow-[0_10px_30px_-24px_rgb(var(--color-ink)/0.5)] backdrop-blur">
+                {nav.map((n) => (
+                  <li key={n.id}>
+                    <a href={`#${n.id}`} className="block whitespace-nowrap border-b-[3px] border-transparent px-4 py-3.5 text-sm font-semibold text-muted transition hover:border-primary hover:text-primary">{n.label}</a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </nav>
+        )}
+
+        <div className="container mt-6 space-y-6">
+          {layout.order("main").map((id) => <EditRegion key={id} {...productRegion(id, editRef)}>{blocks[id]}</EditRegion>)}
+        </div>
+      </div>
+
+      {detail.stickyEnquiryBar && (
+        <div className="fixed inset-x-0 bottom-0 z-30 flex gap-2 border-t border-line bg-surface p-3 lg:hidden">
+          <EnquireButton type="QUOTE" softwareSlugs={[sw.slug]} productName={sw.name} source="PRODUCT_PAGE" className="h-11 flex-1 rounded-control bg-accent text-sm font-bold text-accent-fg">
+            {labels.enquireCta}
+          </EnquireButton>
+          <EnquireButton type="DEMO" softwareSlugs={[sw.slug]} productName={sw.name} source="PRODUCT_PAGE" title={`${labels.demoCta}: ${sw.name}`} className="h-11 flex-1 rounded-control border border-primary text-sm font-semibold text-primary">
+            {labels.demoCta}
+          </EnquireButton>
+        </div>
+      )}
+    </>
+  );
+}

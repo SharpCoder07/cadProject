@@ -1,0 +1,112 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Default theme. Overridden at runtime from Settings → Theme (see ThemeStyle). */
+:root {
+  --color-bg: 247 248 250;
+  --color-surface: 255 255 255;
+  --color-ink: 17 24 39;
+  --color-muted: 91 102 129;
+  --color-line: 224 228 238;
+  --color-primary: 15 118 110;
+  --color-primary-fg: 255 255 255;
+  --color-primary-soft: 231 241 240;
+  --color-sidebar: 251 251 252;
+  --color-action: 15 118 110;
+  --color-action-fg: 255 255 255;
+  --color-accent: 245 158 11;
+  --color-accent-fg: 17 24 39;
+  --color-success: 5 150 105;
+  --color-band: 6 45 42;
+  --color-danger: 214 48 49;
+  --color-warning: 191 116 0;
+  --color-mint: 153 222 210;
+  --color-mint-soft: 230 247 244;
+  --color-mint-ink: 14 128 116;
+  --radius-control: 10px;
+  --radius-panel: 16px;
+}
+
+@layer base {
+  html { -webkit-text-size-adjust: 100%; }
+  body { @apply bg-bg text-ink font-sans antialiased; font-feature-settings: "kern"; }
+  h1, h2, h3, h4 { @apply font-display text-ink; letter-spacing: -0.015em; }
+  :where(:not(input:not([type="checkbox"]):not([type="radio"])):not(textarea):not(select)):focus-visible { @apply outline-none ring-2 ring-primary ring-offset-2 ring-offset-bg; }
+  /* Text fields, dropdowns and search boxes: soft mint glow everywhere. */
+  :where(input:not([type="checkbox"]):not([type="radio"]), textarea, select):focus-visible { @apply border-mint outline-none ring-4 ring-mint-soft ring-offset-0; }
+  ::selection { background: rgb(var(--color-accent) / 0.35); }
+}
+
+@layer components {
+  .prose-content { @apply prose prose-slate max-w-prose prose-headings:font-display prose-a:text-primary; }
+  .prose-content mark { @apply rounded-sm bg-warning/25 px-0.5 text-inherit; }
+  .prose-content img { @apply rounded-lg; }
+  .prose-content h5 { @apply mb-2 mt-5 text-base font-semibold text-ink; }
+  .prose-content h6 { @apply mb-2 mt-4 text-sm font-semibold uppercase tracking-wide text-muted; }
+  .prose-content table { @apply my-5 w-full border-collapse text-sm; }
+  .prose-content th, .prose-content td { @apply relative border border-line px-3 py-2 text-left align-top; }
+  .prose-content th { @apply bg-bg font-semibold text-ink; }
+  .prose-content th > p, .prose-content td > p { @apply my-0; }
+  /* Typography plugin removes the outer padding of first/last cells; keep it inside bordered tables. */
+  .prose-content table :is(th, td):first-child { padding-left: 0.75rem; }
+  .prose-content table :is(th, td):last-child { padding-right: 0.75rem; }
+  .prose-content .tableWrapper { @apply overflow-x-auto; }
+  .prose-content .selectedCell { @apply bg-mint-soft; }
+  /* Dark brand band (hero, CTA, footer): deep brand colour with a faint ledger grid. */
+  .band-ink {
+    background-color: rgb(var(--color-band));
+    background-image:
+      linear-gradient(rgb(255 255 255 / 0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgb(255 255 255 / 0.04) 1px, transparent 1px);
+    background-size: 44px 44px;
+    color: #fff;
+  }
+  .band-ink h1, .band-ink h2, .band-ink h3 { color: #fff; }
+  /* Admin background: flat neutral canvas (see src/components/admin/theme.tsx for admin tokens). */
+  .admin-canvas { background-color: rgb(var(--color-bg)); }
+  .admin-card {
+    @apply rounded-panel border border-line/70 bg-surface;
+    box-shadow: 0 1px 2px rgb(16 24 40 / 0.04), 0 1px 3px rgb(16 24 40 / 0.03);
+  }
+  .card-lift { @apply transition duration-200 hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-[0_12px_32px_-16px_rgb(var(--color-ink)/0.35)]; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+}
+
+/*
+ * Scrollbars are hidden across the website and the admin panel; pages and panels still scroll
+ * with the mouse wheel, trackpad, touch and keyboard. The admin/vendor sidebar keeps a thin
+ * scrollbar (class "show-scrollbar"), since its menu is long.
+ */
+* {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+*::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+.show-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--color-ink) / 0.2) transparent;
+  -ms-overflow-style: auto;
+}
+.show-scrollbar::-webkit-scrollbar {
+  display: block;
+  width: 8px;
+  height: 8px;
+}
+.show-scrollbar::-webkit-scrollbar-thumb {
+  background: rgb(var(--color-ink) / 0.2);
+  border-radius: 999px;
+}
+.show-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--color-ink) / 0.35);
+}
+.show-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}

@@ -1,0 +1,277 @@
+import type { Metadata } from "next";
+import Image from "next/image";
+import Link from "next/link";
+import { notFound } from "next/navigation";
+import { ArrowRight, BookOpen, CalendarDays, Clock, Headset, ListTree } from "lucide-react";
+import { db } from "@/server/db";
+import { getSettings } from "@/server/settings";
+import { cardsByIds } from "@/server/services/catalog";
+import { getPublishedPost, listPublishedPosts, type PostCard } from "@/server/services/blog";
+import { buildMetadata } from "@/server/seo/metadata";
+import { articleLd } from "@/server/seo/jsonld";
+import { formatDate } from "@/lib/format";
+import { slugify } from "@/lib/utils";
+import { Breadcrumbs } from "@/components/site/breadcrumbs";
+import { JsonLd } from "@/components/site/json-ld";
+import { SoftwareRow } from "@/components/site/software-card";
+import { EnquireButton } from "@/components/site/lead-dialog";
+import { makeT, type T } from "@/lib/site-texts";
+import { Fragment } from "react";
+import { pageLayout, layoutForEdit } from "@/lib/layouts";
+import { EditRegion, PageEditActions } from "@/components/site/edit-mode";
+import { postRegion } from "@/lib/edit-regions";
+
+type Props = { params: Promise<{ slug: string }>; searchParams: Promise<{ preview?: string }> };
+
+const TYPE_KEY: Record<string, string> = { GUIDE: "blog.typeGuide", NEWS: "blog.typeNews", RESOURCE: "blog.typeResource", ARTICLE: "blog.typeArticle" };
+
+async function load(slug: string, previewKey?: string) {
+  if (previewKey) {
+    const p = await db.post.findUnique({ where: { slug }, include: { seo: { include: { ogImage: true } }, cover: true, author: { include: { avatar: true } }, category: true, tags: { include: { tag: true } }, software: { include: { software: { select: { id: true } } } } } });
+    if (p && p.previewKey === previewKey) return { post: p, preview: p.status !== "PUBLISHED" };
+  }
+  const post = await getPublishedPost(slug);
+  return post ? { post, preview: false } : null;
+}
+
+/** Gives each <h2> an id (for the "On this page" list) and returns the list. */
+function withAnchors(html: string) {
+  const toc: { id: string; text: string }[] = [];
+  const used = new Set<string>();
+  const out = html.replace(/<h2(\s[^>]*)?>([\s\S]*?)<\/h2>/gi, (whole, attrs: string | undefined, inner: string) => {
+    const text = inner.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&nbsp;/g, " ").trim();
+    if (!text) return whole;
+    let id = slugify(text).slice(0, 60) || `section-${toc.length + 1}`;
+    while (used.has(id)) id = `${id}-${toc.length + 1}`;
+    used.add(id);
+    toc.push({ id, text });
+    const cleanAttrs = (attrs ?? "").replace(/\sid="[^"]*"/i, "");
+    return `<h2 id="${id}"${cleanAttrs}>${inner}</h2>`;
+  });
+  return { html: out, toc };
+}
+
+export async function generateMetadata({ params, searchParams }: Props): Promise<Metadata> {
+  const r = await load((await params).slug, (await searchParams).preview);
+  if (!r) return {};
+  const { post } = r;
+  return buildMetadata({ path: `/blog/${post.slug}`, title: post.title, description: post.excerpt, image: post.cover?.url, seo: post.seo, type: "article", publishedTime: post.publishedAt, noIndex: r.preview });
+}
+
+function RelatedCard({ post, t }: { post: PostCard; t: T }) {
+  return (
+    <article className="group relative flex h-full flex-col overflow-hidden rounded-2xl border border-line bg-surface transition hover:-translate-y-0.5 hover:shadow-[0_18px_40px_-26px_rgb(var(--color-ink)/0.45)]">
+      <div className="relative aspect-[16/9] overflow-hidden bg-[linear-gradient(135deg,rgb(var(--color-primary-soft))_0%,rgb(var(--color-surface))_100%)]">
+        {post.cover ? (
+          <Image src={post.cover.url} alt={post.cover.alt ?? ""} fill className="object-cover transition duration-500 group-hover:scale-[1.03]" sizes="(min-width:1024px) 33vw, 100vw" />
+        ) : (
+          <span className="absolute inset-0 grid place-items-center text-primary/70" aria-hidden><BookOpen className="h-8 w-8" /></span>
+        )}
+      </div>
+      <div className="flex flex-1 flex-col p-5">
+        <p className="text-xs text-muted">{formatDate(post.publishedAt)}{post.category && <span className="font-semibold text-accent"> · {post.category.name}</span>}</p>
+        <h3 className="mt-2 line-clamp-3 text-base font-bold leading-snug text-ink">
+          <Link href={`/blog/${post.slug}`} className="after:absolute after:inset-0 group-hover:text-primary">{post.title}</Link>
+        </h3>
+        <span className="mt-auto inline-flex items-center gap-1 pt-4 text-sm font-bold text-primary">{t("post.readArticle")} <ArrowRight className="h-4 w-4 transition group-hover:translate-x-0.5" aria-hidden /></span>
+      </div>
+    </article>
+  );
+}
+
+/**
+ * Blog article: light hero with title, summary and byline; then the article (cover, body, products,
+ * tags, author) beside a sticky sidebar ("On this page", free-advice card, more from the topic);
+ * "Keep reading" at the end.
+ */
+export default async function PostPage({ params, searchParams }: Props) {
+  const r = await load((await params).slug, (await searchParams).preview);
+  if (!r) notFound();
+  const { post } = r;
+  const [settings, products, sameTopic, latest] = await Promise.all([
+    getSettings(),
+    cardsByIds(post.software.map((s) => s.software.id)),
+    post.category ? listPublishedPosts({ categorySlug: post.category.slug, perPage: 4, excludeIds: [post.id] }) : Promise.resolve({ items: [] as PostCard[] }),
+    listPublishedPosts({ perPage: 4, excludeIds: [post.id] }),
+  ]);
+  const t = makeT(settings.texts);
+  const { html, toc } = withAnchors(post.content);
+  const more = sameTopic.items.slice(0, 3);
+  const keepReading = [...more, ...latest.items.filter((p) => !more.some((m) => m.id === p.id))].slice(0, 3);
+  const pl = pageLayout("post", settings.layouts.post);
+  const initials = post.author?.name.split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+
+  // Parts set in Website › Page layouts.
+  const endBlocks = {
+    tags: (
+      <>
+              {post.tags.length > 0 && (
+                <ul className="mt-10 flex flex-wrap gap-2 border-t border-line pt-6">
+                  {post.tags.map((t) => (
+                    <li key={t.tag.slug}><Link href={`/blog?tag=${t.tag.slug}`} className="inline-flex h-8 items-center rounded-full border border-line bg-bg px-3.5 text-xs font-semibold text-ink hover:border-primary hover:text-primary">#{t.tag.name}</Link></li>
+                  ))}
+                </ul>
+              )}
+      </>
+    ),
+    author: (
+      <>
+              {post.author?.bio && (
+                <aside className="mt-8 flex gap-4 rounded-2xl bg-bg p-5">
+                  {post.author.avatar ? (
+                    <Image src={post.author.avatar.url} alt="" width={56} height={56} className="h-14 w-14 shrink-0 rounded-full object-cover" />
+                  ) : (
+                    <span className="grid h-14 w-14 shrink-0 place-items-center rounded-full bg-gradient-to-br from-primary to-accent font-bold text-white" aria-hidden>{initials}</span>
+                  )}
+                  <div>
+                    <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-muted">{t("post.writtenBy")}</p>
+                    <p className="mt-0.5 font-bold text-ink">{post.author.name}{post.author.jobTitle && <span className="font-normal text-muted">, {post.author.jobTitle}</span>}</p>
+                    <p className="mt-1 text-sm leading-relaxed text-muted">{post.author.bio}</p>
+                  </div>
+                </aside>
+              )}
+      </>
+    ),
+  };
+  const sideBlocks = {
+    toc: (
+      <>
+            {toc.length > 1 && (
+              <nav aria-label={t("post.onThisPage")} className="rounded-2xl border border-line bg-surface p-5">
+                <p className="flex items-center gap-2 text-sm font-bold text-ink"><ListTree className="h-4 w-4 text-primary" aria-hidden /> {t("post.onThisPage")}</p>
+                <ol className="mt-3 space-y-1 border-l-2 border-line">
+                  {toc.map((t) => (
+                    <li key={t.id}>
+                      <a href={`#${t.id}`} className="-ml-0.5 block border-l-2 border-transparent py-1 pl-3 text-sm text-muted transition hover:border-primary hover:text-primary">{t.text}</a>
+                    </li>
+                  ))}
+                </ol>
+              </nav>
+            )}
+      </>
+    ),
+    help: (
+      <>
+            <div className="relative overflow-hidden rounded-2xl bg-[linear-gradient(135deg,rgb(var(--color-primary))_0%,rgb(var(--color-primary)/0.82)_100%)] p-5 text-white">
+              <div aria-hidden className="pointer-events-none absolute -right-10 -top-10 h-32 w-32 rounded-full bg-accent/30 blur-2xl" />
+              <Headset className="relative h-7 w-7" aria-hidden />
+              <p className="relative mt-3 text-lg font-bold leading-snug">{t("post.helpTitle")}</p>
+              <p className="relative mt-1 text-sm text-white/80">{t("post.helpText")}</p>
+              <EnquireButton source="GET_ADVICE" title={t("post.helpFormTitle")} className="relative mt-4 inline-flex h-10 w-full items-center justify-center rounded-xl bg-accent text-sm font-bold text-accent-fg transition hover:brightness-95">
+                {t("post.helpButton")}
+              </EnquireButton>
+            </div>
+      </>
+    ),
+    more: (
+      <>
+            {more.length > 0 && (
+              <div className="rounded-2xl border border-line bg-surface p-5">
+                <p className="text-sm font-bold text-ink">{t("post.moreIn", { topic: post.category?.name ?? "" })}</p>
+                <ul className="mt-3 divide-y divide-line">
+                  {more.map((p) => (
+                    <li key={p.id} className="py-2.5 first:pt-0 last:pb-0">
+                      <Link href={`/blog/${p.slug}`} className="block text-sm font-semibold leading-snug text-ink hover:text-primary">{p.title}</Link>
+                      <p className="mt-0.5 text-xs text-muted">{formatDate(p.publishedAt)} · {t("blog.minRead", { minutes: p.readingMinutes })}</p>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+      </>
+    ),
+  };
+
+  return (
+    <article>
+      <PageEditActions actions={[{ label: "Edit article", href: `/admin/blog/${post.id}`, primary: true }, { label: "Article page layout", href: "/admin/cms/layouts?page=post" }, { label: "Article texts", href: "/admin/cms/texts?group=post" }]} layout={layoutForEdit("post", settings.layouts.post)} />
+      <JsonLd data={articleLd(post, settings.site.name, settings.site.logoUrl)} />
+
+      {/* Hero */}
+      <header className="relative overflow-hidden border-b border-line bg-[linear-gradient(180deg,rgb(var(--color-primary-soft))_0%,rgb(var(--color-surface))_100%)]">
+        <div aria-hidden className="pointer-events-none absolute -left-24 top-10 h-64 w-64 rounded-full bg-primary/10 blur-3xl" />
+        <div aria-hidden className="pointer-events-none absolute -right-24 bottom-0 h-72 w-72 rounded-full bg-accent/15 blur-3xl" />
+        <div className="container relative py-10 sm:py-12">
+          <Breadcrumbs items={[{ name: t("blog.breadcrumb"), path: "/blog" }, ...(post.category ? [{ name: post.category.name, path: `/blog?category=${post.category.slug}` }] : []), { name: post.title, path: `/blog/${post.slug}` }]} />
+          {r.preview && <p className="mt-4 inline-block rounded-control bg-warning/15 px-3 py-1.5 text-sm font-semibold">{t("post.preview")}</p>}
+          <div className="mt-6 max-w-4xl">
+            <p className="flex flex-wrap items-center gap-2 text-[11px] font-bold uppercase tracking-[0.14em]">
+              {post.category && <Link href={`/blog?category=${post.category.slug}`} className="text-accent hover:underline">{post.category.name}</Link>}
+              <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-[10px] tracking-wide text-primary">{t(TYPE_KEY[post.type] ?? "blog.typeArticle")}</span>
+            </p>
+            <h1 className="mt-3 text-[clamp(1.9rem,4.2vw,3rem)] font-extrabold leading-[1.12] tracking-[-0.02em] text-ink">{post.title}</h1>
+            {post.excerpt && <p className="mt-4 max-w-3xl text-lg leading-relaxed text-muted">{post.excerpt}</p>}
+            <div className="mt-6 flex flex-wrap items-center gap-x-5 gap-y-3 text-sm text-muted">
+              {post.author && (
+                <Link href={`/blog/author/${post.author.slug}`} className="flex items-center gap-2.5 font-semibold text-ink hover:text-primary">
+                  {post.author.avatar ? (
+                    <Image src={post.author.avatar.url} alt="" width={36} height={36} className="h-9 w-9 rounded-full object-cover" />
+                  ) : (
+                    <span className="grid h-9 w-9 place-items-center rounded-full bg-gradient-to-br from-primary to-accent text-xs font-bold text-white" aria-hidden>{initials}</span>
+                  )}
+                  <span>
+                    {post.author.name}
+                    {post.author.jobTitle && <span className="block text-xs font-normal text-muted">{post.author.jobTitle}</span>}
+                  </span>
+                </Link>
+              )}
+              <span className="inline-flex items-center gap-1.5"><CalendarDays className="h-4 w-4" aria-hidden /> {formatDate(post.publishedAt ?? post.updatedAt)}</span>
+              <span className="inline-flex items-center gap-1.5"><Clock className="h-4 w-4" aria-hidden /> {t("blog.minRead", { minutes: post.readingMinutes })}</span>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <div className="bg-bg">
+        <div className="container grid gap-8 py-10 lg:grid-cols-[minmax(0,1fr)_19rem] lg:gap-10">
+          {/* Article */}
+          <div className="min-w-0">
+            <div className="rounded-[1.75rem] border border-line bg-surface p-5 shadow-[0_24px_60px_-44px_rgb(var(--color-ink)/0.35)] sm:p-8 lg:p-10">
+              {pl.show("cover") && post.cover && (
+                <div className="relative -mx-1 mb-8 aspect-[1200/630] overflow-hidden rounded-2xl bg-line">
+                  <Image src={post.cover.url} alt={post.cover.alt ?? ""} fill className="object-cover" sizes="(min-width: 1024px) 760px, 100vw" priority />
+                </div>
+              )}
+              <EditRegion label="Article" live={{ kind: "post", id: post.id, section: "article", title: "Article" }} actions={[{ label: "Open in admin", href: `/admin/blog/${post.id}` }]}>
+              <div className="prose-content !max-w-none prose-h2:scroll-mt-40 prose-h2:text-[1.55rem] prose-h2:font-extrabold prose-h3:text-lg prose-p:leading-relaxed prose-li:my-1" dangerouslySetInnerHTML={{ __html: html }} />
+              </EditRegion>
+
+              {pl.order("end").map((id) => <EditRegion key={id} {...postRegion(id, { id: post.id })}>{id === "tags" ? endBlocks.tags : endBlocks.author}</EditRegion>)}
+            </div>
+
+            {pl.show("mentioned") && products.length > 0 && (
+              <section className="mt-8" aria-labelledby="mentioned-heading">
+                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-accent">{t("post.mentionedEyebrow")}</p>
+                <h2 id="mentioned-heading" className="mt-1 text-[1.4rem] font-bold text-ink">{t("post.mentionedTitle")}</h2>
+                <div className="mt-4 space-y-3">
+                  {products.map((sw) => <SoftwareRow key={sw.id} sw={sw} labels={settings.labels} opts={settings.listing} />)}
+                </div>
+              </section>
+            )}
+          </div>
+
+          {/* Sidebar */}
+          <aside className="space-y-5 lg:sticky lg:top-36 lg:self-start">
+            {pl.order("sidebar").map((id) => <EditRegion key={id} {...postRegion(id, { id: post.id })}>{sideBlocks[id as keyof typeof sideBlocks]}</EditRegion>)}
+          </aside>
+        </div>
+
+        {pl.show("keepReading") && keepReading.length > 0 && (
+          <section className="container pb-14" aria-labelledby="keep-reading">
+            <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-accent">{t("post.keepEyebrow")}</p>
+                <h2 id="keep-reading" className="mt-1 text-[1.5rem] font-bold text-ink sm:text-[1.85rem]">{t("post.keepTitle")}</h2>
+                <span aria-hidden className="mt-2.5 block h-1 w-12 rounded-full bg-accent" />
+              </div>
+              <Link href="/blog" className="inline-flex h-9 items-center gap-1 rounded-control border border-primary/30 px-4 text-sm font-semibold text-primary hover:bg-primary hover:text-primary-fg">{t("post.allArticles")} <ArrowRight className="h-4 w-4" aria-hidden /></Link>
+            </div>
+            <ul className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+              {keepReading.map((p) => <li key={p.id}><RelatedCard post={p} t={t} /></li>)}
+            </ul>
+          </section>
+        )}
+      </div>
+    </article>
+  );
+}

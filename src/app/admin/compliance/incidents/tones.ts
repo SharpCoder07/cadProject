@@ -1,0 +1,1 @@
+export const SEVERITY_TONE: Record<string, string> = { LOW: "bg-ink/[0.05] text-ink/70 ring-line", MEDIUM: "bg-primary/10 text-primary ring-primary/20", HIGH: "bg-warning/10 text-warning ring-warning/25", CRITICAL: "bg-danger/10 text-danger ring-danger/20" };

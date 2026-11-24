@@ -1,0 +1,9 @@
+import { Bug, FileClock, Award, BarChart3, Bell, Blocks, CreditCard, Heart, Shapes, Tag, Wallet, BookOpen, Boxes, Building2, ClipboardList, Columns3, Factory, FileText, Filter, FolderTree, Globe, HelpCircle, Image as ImageIcon, Inbox, KeyRound, LayoutDashboard, LayoutTemplate, Mail, Package, Palette, Search, Megaphone, Menu as MenuIcon, MessageSquareQuote, Plug, ScrollText, Settings, Shield, ShieldCheck, Star, Store, Users, Handshake, Map as MapIcon, Trash2, DatabaseBackup, Type, Rocket, Lock, Scale, type LucideIcon, ClipboardCheck, Cookie, MessageSquareWarning, Flag, Archive, ShieldAlert } from "lucide-react";
+
+/** Icon keys used by the admin navigation (nav.ts) and Create shortcuts. */
+export const ADMIN_ICONS: Record<string, LucideIcon> = {
+  dashboard: LayoutDashboard, website: LayoutTemplate, email: Mail, approvals: ShieldCheck, portal: Store, design: Palette, software: Package, boxes: Boxes, categories: FolderTree, vendors: Building2, attributes: Filter, industries: Factory,
+  reviews: Star, questions: MessageSquareQuote, compare: Columns3, leads: Inbox, clipboard: ClipboardList, reports: BarChart3, pages: FileText, menus: MenuIcon, banners: ImageIcon,
+  announcements: Megaphone, blocks: Blocks, testimonials: MessageSquareQuote, faqs: HelpCircle, blog: BookOpen, media: ImageIcon,
+  seo: Search, globe: Globe, settings: Settings, integrations: Plug, users: Users, roles: KeyRound, audit: ScrollText, logs: FileClock, bug: Bug, shield: Shield, bell: Bell, billing: CreditCard, payments: Wallet, offers: Tag, favourites: Heart, classifications: Shapes, brands: Award, resellers: Handshake, guide: MapIcon, bin: Trash2, backup: DatabaseBackup, deploy: Rocket, texts: Type, privacy: Lock, legal: Scale, consent: ClipboardCheck, cookie: Cookie, inbox: Inbox, grievance: MessageSquareWarning, flag: Flag, archive: Archive, incident: ShieldAlert,
+};

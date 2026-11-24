@@ -1,0 +1,99 @@
+import type { Metadata } from "next";
+import Image from "next/image";
+import Link from "next/link";
+import { notFound } from "next/navigation";
+import { Globe } from "lucide-react";
+import { db } from "@/server/db";
+import { getSettings } from "@/server/settings";
+import { runListing } from "@/server/services/catalog";
+import { searchParamsSchema } from "@/server/services/search";
+import { buildMetadata, listingIndexing } from "@/server/seo/metadata";
+import { collectionPageLd } from "@/server/seo/jsonld";
+import { JsonLd } from "@/components/site/json-ld";
+
+import { normaliseParams, type RawParams } from "@/lib/search-params";
+import { Breadcrumbs } from "@/components/site/breadcrumbs";
+import { ListingResults } from "@/components/site/listing";
+import { EnquireButton } from "@/components/site/lead-dialog";
+import { makeT } from "@/lib/site-texts";
+import { getT } from "@/server/texts";
+import { pageLayout, layoutForEdit } from "@/lib/layouts";
+import { EditRegion, PageEditActions } from "@/components/site/edit-mode";
+
+type Props = { params: Promise<{ slug: string }>; searchParams: Promise<RawParams> };
+const load = (slug: string) => db.brand.findFirst({ where: { slug, isActive: true }, include: { logo: true, seo: { include: { ogImage: true } }, vendor: { select: { name: true, slug: true, isActive: true } } } });
+
+export async function generateMetadata({ params, searchParams }: Props): Promise<Metadata> {
+  const b = await load((await params).slug);
+  if (!b) return {};
+  const idx = listingIndexing(`/brands/${b.slug}`, await searchParams);
+  // A brand with no live products is thin content: keep it out of search results.
+  const live = await db.software.count({ where: { brandId: b.id, status: "PUBLISHED" } });
+  const t = await getT();
+  return buildMetadata({ path: idx.path, noIndex: idx.noIndex || live === 0, title: `${t("brand.seoTitle", { name: b.name })}${idx.page > 1 ? ` — Page ${idx.page}` : ""}`, description: b.description?.slice(0, 160) ?? t("brand.seoDescription", { name: b.name }), seo: idx.page > 1 ? null : b.seo });
+}
+
+/** A brand's page: logo, about, and its published products as a filterable listing. */
+export default async function BrandPage({ params, searchParams }: Props) {
+  const brand = await load((await params).slug);
+  if (!brand) notFound();
+  const raw = await searchParams;
+  const sp = searchParamsSchema.parse(normaliseParams(raw));
+  const [settings, listing] = await Promise.all([getSettings(), runListing(sp, { brandId: brand.id }, "popular")]);
+  const t = makeT(settings.texts);
+  const basePath = `/brands/${brand.slug}`;
+  const pl = pageLayout("brand", settings.layouts.brand);
+  return (
+    <>
+      <PageEditActions actions={[{ label: "Edit brand", href: "/admin/brands", primary: true }, { label: "Brand page layout", href: "/admin/cms/layouts?page=brand" }, { label: "Brand page texts", href: "/admin/cms/texts?group=brand" }]} layout={layoutForEdit("brand", settings.layouts.brand)} />
+      <JsonLd data={collectionPageLd({ name: `${brand.name} software`, path: basePath, description: brand.description, items: listing.items.map((x) => ({ name: x.name, path: `/software/${x.slug}` })), offset: (listing.page - 1) * listing.perPage })} />
+      <EditRegion label="Brand header" live={{ kind: "brands", id: "all", section: "all", title: "Brands" }} actions={[{ label: "Open in admin", href: "/admin/brands" }, { label: "Show / hide / order", href: "/admin/cms/layouts?page=brand" }, { label: "Wording", href: "/admin/cms/texts?group=brand" }]}>
+      <div className="border-b border-line bg-[linear-gradient(180deg,rgb(var(--color-primary-soft))_0%,rgb(var(--color-surface))_100%)]">
+        <div className="container py-8 sm:py-10">
+          <Breadcrumbs items={[{ name: t("brands.heading"), path: "/brands" }, { name: brand.name, path: basePath }]} />
+          <header className="mt-5 flex flex-col gap-6 rounded-panel border border-line bg-surface p-6 sm:flex-row sm:items-center">
+            {pl.show("logo") && <span className="flex h-24 w-40 shrink-0 items-center justify-center rounded-control border border-line bg-surface p-3">
+              {brand.logo ? (
+                <Image src={brand.logo.url} alt={`${brand.name} logo`} width={160} height={80} className="max-h-16 w-auto max-w-full object-contain" />
+              ) : (
+                <span className="font-display text-3xl font-bold text-primary" aria-hidden>{brand.name.slice(0, 1)}</span>
+              )}
+            </span>}
+            <div className="min-w-0 flex-1">
+              <h1 className="text-[1.8rem] font-extrabold tracking-[-0.02em] text-ink sm:text-[2.3rem]">{t("brand.heading", { name: brand.name })}</h1>
+              <p className="mt-1 flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted">
+                {pl.show("count") && <span>{t(listing.total === 1 ? "brand.countOne" : "brand.count", { count: listing.total })}</span>}
+                {pl.show("company") && brand.vendor?.isActive && (
+                  <span>
+                    {t("product.by")} <Link href={`/vendors/${brand.vendor.slug}`} className="text-ink hover:text-primary">{brand.vendor.name}</Link>
+                  </span>
+                )}
+                {pl.show("website") && brand.website && (
+                  <a href={brand.website} target="_blank" rel="noopener nofollow" className="inline-flex items-center gap-1 text-primary hover:underline">
+                    <Globe className="h-4 w-4" aria-hidden /> {t("brand.website")}
+                  </a>
+                )}
+              </p>
+              {pl.show("description") && brand.description && <p className="mt-3 max-w-3xl whitespace-pre-line text-[15px] leading-relaxed text-muted">{brand.description}</p>}
+            </div>
+            {pl.show("enquire") && <EnquireButton type="QUOTE" source="GET_ADVICE" title={t("brand.formTitle", { name: brand.name })} className="inline-flex h-11 shrink-0 items-center rounded-control bg-accent px-5 text-sm font-bold text-accent-fg hover:brightness-95">
+              {settings.labels.enquireCta}
+            </EnquireButton>}
+          </header>
+        </div>
+      </div>
+      </EditRegion>
+      <EditRegion label="Products" actions={[{ label: "Products", href: "/admin/software" }, { label: "Listing settings", href: "/admin/settings?tab=listing" }, { label: "Wording", href: "/admin/cms/texts?group=brand" }]}>
+      <div className="container py-10">
+        {pl.show("productsTitle") && (
+          <>
+            <h2 className="text-[1.5rem] font-bold text-ink sm:text-[1.85rem]">{t("brand.productsTitle", { name: brand.name })}</h2>
+            <span aria-hidden className="mb-6 mt-2.5 block h-1 w-12 rounded-full bg-accent" />
+          </>
+        )}
+        <ListingResults listing={listing} params={sp} settings={settings} basePath={basePath} rawParams={raw} clearHref={basePath} />
+      </div>
+      </EditRegion>
+    </>
+  );
+}

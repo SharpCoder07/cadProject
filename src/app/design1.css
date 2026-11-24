@@ -1,0 +1,156 @@
+/*
+ * "Design 1": a whole-site look modelled on certinal.com (Website settings › Design & theme › Ready-made designs).
+ * Turned on by data-design="design1" on the site wrapper; every rule is scoped to it, so the classic design is
+ * untouched. Uses the theme colours (Design 1 sets the Lime & Forest Green palette) plus a few fixed tints from
+ * the reference: page #FFFFFF, soft section #FDFFF7 / #F5F7FC, hairline #DBDEE3, footer #FAFAFA.
+ */
+/* Tints follow the active colour theme (data-d1-tint="theme"). With the Lime & Forest Green Color theme
+   (data-d1-tint="lime", set in app/(site)/layout.tsx) the reference's exact greens are used instead. */
+[data-design="design1"] {
+  --d1-line: 219 222 227;
+  --d1-mist: 245 247 252;
+  --d1-ink-2: 51 53 58;
+  --d1-soft-c: color-mix(in srgb, rgb(var(--color-primary)) 4%, #fff);
+  --d1-sh: var(--color-primary);
+  --d1-edge: var(--color-primary);
+  --d1-grad: linear-gradient(294deg, rgb(var(--color-accent)) 5%, rgb(var(--color-primary)) 95%);
+  --d1-cta: linear-gradient(96deg, color-mix(in srgb, rgb(var(--color-accent)) 55%, #fff) 0%, rgb(var(--color-accent)) 45%, color-mix(in srgb, rgb(var(--color-accent)) 80%, #fff) 100%);
+}
+[data-design="design1"][data-d1-tint="lime"] {
+  --d1-soft-c: rgb(253 255 247);
+  --d1-sh: 62 79 5;
+  --d1-edge: 92 115 18;
+  --d1-grad: linear-gradient(294deg, #a4ea5b 7.55%, #53cf64 37.55%, #7bdc60 63.22%, #01b46d 94.19%);
+  --d1-cta: linear-gradient(96deg, #d4f979 0%, rgb(var(--color-accent)) 45%, #bfe655 100%);
+}
+
+/* ── Type ── */
+[data-design="design1"] :is(h1, h2, h3) { font-weight: 600; letter-spacing: -0.025em; }
+[data-design="design1"] h1 { letter-spacing: -0.03em; }
+/* Softer body text, except on coloured panels (promo banners, dark bands, buttons) where the panel's own text colour stays. */
+[data-design="design1"] main p:not(:is(.bg-primary, .bg-band, .bg-ink, .bg-accent, .text-white, .text-primary-fg, .text-accent-fg, .cg-cta) *) { color: rgb(var(--d1-ink-2)); }
+[data-design="design1"] main .text-muted:not(:is(.bg-primary, .bg-band, .bg-ink, .bg-accent, .text-white, .text-primary-fg, .text-accent-fg) *) { color: rgb(105 108 113); }
+/* Gradient accent words (the last words of the hero heading). */
+[data-design="design1"] .cg-accent { background: var(--d1-grad); -webkit-background-clip: text; background-clip: text; color: transparent; padding-bottom: 0.08em; }
+/* Small capitals label above headings. */
+.cg-eyebrow { display: none; }
+[data-design="design1"] .cg-eyebrow { display: block; margin: 0 auto 18px; font-size: 12px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase; color: rgb(var(--color-primary)); }
+
+/* ── Header: translucent white with blur, nav as a capsule ── */
+[data-design="design1"] .cg-header { background: rgb(255 255 255 / 0.96); -webkit-backdrop-filter: blur(18px) saturate(1.6); backdrop-filter: blur(18px) saturate(1.6); box-shadow: none; border-bottom-color: rgb(var(--d1-line) / 0.7); }
+[data-design="design1"] .cg-nav { border-top-color: transparent; }
+[data-design="design1"] .cg-nav ul { gap: 2px; }
+[data-design="design1"] .cg-nav :is(a, button) { border-radius: 9999px; }
+[data-design="design1"] .cg-nav :is(a, button):hover { background: rgb(var(--color-accent) / 0.35); }
+
+/* ── Buttons: lime, 10px corners, semibold; outline buttons with a fine olive border ── */
+[data-design="design1"] .bg-accent:is(a, button) { border-radius: 10px; font-weight: 600; box-shadow: none; }
+[data-design="design1"] .bg-accent:is(a, button):hover { filter: brightness(0.97); }
+[data-design="design1"] main .bg-primary:is(a, button) { background: rgb(var(--color-ink)); color: #fff; border-radius: 10px; font-weight: 600; }
+[data-design="design1"] main .border-primary\/30:is(a, button) { border-color: rgb(var(--d1-edge) / 0.32); color: rgb(var(--color-ink)); border-radius: 10px; }
+[data-design="design1"] main .border-primary\/30:is(a, button):hover { background: rgb(var(--color-accent) / 0.4); color: rgb(var(--color-ink)); }
+
+/* ── Hero: white page, filled lime arcs rising from the bottom, stats on one white card ── */
+[data-design="design1"] .cg-hero { background: #fff; border-bottom: 0; }
+[data-design="design1"] .cg-hero .cg-hero-fx::before {
+  width: min(1150px, 130vw); top: 104%;
+  background: radial-gradient(circle at center,
+    #1fbf74 0 15%, #3ccc6c 15% 24%, #6ad86a 24% 33%, #9ae46c 33% 42%, #c4ee7e 42% 51%, #e2f6b4 51% 60%, #f4fbe0 60% 69%, transparent 70%);
+  -webkit-mask: linear-gradient(#000 0 0); mask: linear-gradient(#000 0 0);
+  opacity: 0.75; animation: none;
+}
+[data-design="design1"] .cg-hero .cg-hero-in { position: relative; z-index: 1; }
+[data-design="design1"] .cg-hero .cg-hero-fx::after { top: 92%; background: radial-gradient(circle at center, rgb(255 255 255 / 0.55), transparent 60%); }
+[data-design="design1"] .cg-hero .cg-float, [data-design="design1"] .cg-hero .cg-float-alt { display: none; }
+[data-design="design1"] .cg-hero h1 { font-weight: 600; }
+[data-design="design1"] .cg-hero .cg-shine { animation: none; background: none; color: rgb(var(--color-ink)); }
+[data-design="design1"] .cg-hero .cg-shine .cg-accent { background: var(--d1-grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+[data-design="design1"] .cg-hero-stats {
+  gap: 0; overflow: hidden; border-radius: 20px; border: 1px solid rgb(255 255 255 / 0.8);
+  background: rgb(255 255 255 / 0.86); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+  box-shadow: 0 18px 40px -24px rgb(var(--d1-sh) / 0.35);
+}
+[data-design="design1"] .cg-hero-stats > div { border: 0; border-radius: 0; box-shadow: none; background: transparent; justify-content: center; text-align: center; }
+[data-design="design1"] .cg-hero-stats > div + div { border-left: 1px solid rgb(var(--d1-line)); }
+[data-design="design1"] .cg-hero-stats > div > span:first-child { display: none; }
+[data-design="design1"] .cg-hero-stats dd { background: var(--d1-grad); -webkit-background-clip: text; background-clip: text; color: transparent; font-size: clamp(1.6rem, 2.6vw, 2.2rem); font-weight: 700; }
+[data-design="design1"] .cg-hero .cg-hero-in > div:has(> a) a { border-radius: 9999px; }
+[data-design="design1"] .cg-hero input { border-radius: 9999px; }
+[data-design="design1"] .cg-hero [class*="bg-surface/70"] { background: #fff; border-top-color: transparent; }
+
+/* ── Section headings: centred feel, no underline bar ── */
+[data-design="design1"] .cg-sh-bar { display: none; }
+[data-design="design1"] .cg-sh h2 { font-size: clamp(1.7rem, 2.8vw, 2.3rem); font-weight: 600; letter-spacing: -0.025em; }
+
+/* ── Alternating soft section backgrounds, full width ── */
+[data-design="design1"] main > section:nth-of-type(even):not(.cg-hero),
+[data-design="design1"] main > [data-cg-section]:nth-of-type(even) > section {
+  background: var(--d1-soft-c);
+  box-shadow: 0 0 0 100vmax var(--d1-soft-c); clip-path: inset(0 -100vmax);
+}
+
+/* ── Cards: white with a hint of lime, 20px corners, hairline and a soft green shadow ── */
+[data-design="design1"] main :is(.card-lift, li > .rounded-panel.border, article.rounded-panel) {
+  border-radius: 20px; border-color: rgb(var(--d1-line));
+  background-image: linear-gradient(#fff, var(--d1-soft-c));
+  box-shadow: inset 0 1px 0 #fff, 0 8px 24px rgb(var(--d1-sh) / 0.06);
+}
+[data-design="design1"] main .card-lift:hover { border-color: rgb(var(--d1-edge) / 0.35); box-shadow: inset 0 1px 0 #fff, 0 16px 36px -10px rgb(var(--d1-sh) / 0.18); }
+
+/* ── Stats block: gradient numbers ── */
+[data-design="design1"] .cg-stats { border-radius: 20px; border-color: rgb(var(--d1-line)); }
+[data-design="design1"] .cg-stats dd { background: var(--d1-grad); -webkit-background-clip: text; background-clip: text; color: transparent; font-weight: 700; }
+
+/* ── Call-to-action band: soft lime panel with dark text ── */
+[data-design="design1"] .cg-cta { background: var(--d1-cta) !important; color: rgb(var(--color-ink)) !important; border-radius: 28px; }
+[data-design="design1"] .cg-cta h2, [data-design="design1"] .cg-cta p { color: rgb(var(--color-ink)) !important; }
+[data-design="design1"] .cg-cta > [aria-hidden] { border-color: rgb(255 255 255 / 0.45); }
+[data-design="design1"] .cg-cta :is(a, button).bg-accent { background: rgb(var(--color-ink)); color: #fff; }
+
+/* ── Footer: light grey with rounded top, dark text ── */
+[data-design="design1"] .cg-footer { background: #fafafa !important; color: rgb(var(--color-ink)); border-radius: 48px 48px 0 0; }
+[data-design="design1"] .cg-footer > [aria-hidden] { display: none; }
+[data-design="design1"] .cg-footer :is(.text-white, [class*="text-white/"]) { color: rgb(var(--color-ink) / 0.72); }
+[data-design="design1"] .cg-footer :is(h2, h3, h4, strong, .font-semibold, .font-bold) { color: rgb(var(--color-ink)); }
+[data-design="design1"] .cg-footer a:hover { color: rgb(var(--color-primary)); }
+[data-design="design1"] .cg-footer [class*="border-white"] { border-color: rgb(var(--d1-line)); }
+[data-design="design1"] .cg-footer [class*="bg-white/"] { background-color: #fff; border: 1px solid rgb(var(--d1-line)); }
+[data-design="design1"] .cg-footer .bg-band { background: #fff; }
+.cg-logo-light { display: none; }
+[data-design="design1"] .cg-logo-light { display: inline-block; }
+[data-design="design1"] .cg-logo-dark { display: none; }
+
+
+/* ── Brands page (any design; styled after certinal.com's knowledge hub) ── */
+/* Decoration colour: the theme's main colour (teal, green…); Design 1 uses its lime accent like the reference.
+   --bd-ink is a deeper shade for small dots and icons. */
+.cg-brands { --bd: var(--color-primary); --bd-ink: var(--color-primary); }
+[data-design="design1"][data-d1-tint="lime"] .cg-brands { --bd: var(--color-accent); --bd-ink: 120 160 40; }
+/* Hero: big filled rings fading from the accent colour, like the reference's right-hand circles. */
+.cg-bh-rings {
+  background: radial-gradient(circle at center,
+    rgb(var(--bd) / var(--bd-a1, 0.55)) 0 14%,
+    rgb(var(--bd) / var(--bd-a2, 0.38)) 14% 27%,
+    rgb(var(--bd) / var(--bd-a3, 0.24)) 27% 41%,
+    rgb(var(--bd) / var(--bd-a4, 0.14)) 41% 55%,
+    rgb(var(--bd) / var(--bd-a5, 0.07)) 55% 70%, transparent 70.5%);
+}
+.cg-bh-rings-sm { filter: blur(1px); }
+[data-motion="full"] .cg-bh-rings { animation: cgBhBreathe 9s ease-in-out infinite; }
+[data-motion="full"] .cg-bh-rings-sm { animation-duration: 12s; animation-delay: -4s; }
+@keyframes cgBhBreathe { 0%, 100% { scale: 1; } 50% { scale: 1.04; } }
+
+/* Card banner: white fading into the accent colour, with thick arcs on the right (reference thumbnails). */
+.cg-brand-banner { background: linear-gradient(110deg, rgb(var(--color-surface)) 0 45%, rgb(var(--bd) / 0.10) 100%); }
+/* Card rings: the page header's soft filled rings, a little stronger on hover. */
+.cg-card-rings { transition: transform 0.6s cubic-bezier(0.2, 0.7, 0.2, 1), opacity 0.4s; opacity: 0.7; }
+.cg-brand-card:hover .cg-card-rings { transform: translateY(-50%) scale(1.08); opacity: 0.95; }
+.cg-brand-card .cg-brand-banner img { transition: transform 0.5s cubic-bezier(0.2, 0.7, 0.2, 1); }
+.cg-brand-card:hover .cg-brand-banner img { transform: scale(1.05); }
+
+/* Closing call to action: soft accent gradient panel. */
+.cg-brand-cta { background: linear-gradient(135deg, rgb(var(--bd) / 0.08), rgb(var(--bd) / 0.22)); }
+/* Lime & Forest Green: the brighter lime takes stronger tints, as on the reference. */
+[data-design="design1"][data-d1-tint="lime"] .cg-brands { --bd-a1: 0.85; --bd-a2: 0.62; --bd-a3: 0.42; --bd-a4: 0.26; --bd-a5: 0.14; }
+[data-design="design1"][data-d1-tint="lime"] .cg-brand-banner { background: linear-gradient(110deg, rgb(var(--color-surface)) 0 45%, rgb(var(--bd) / 0.18) 100%); }
+[data-design="design1"][data-d1-tint="lime"] .cg-brand-cta { background: linear-gradient(135deg, rgb(var(--bd) / 0.35), rgb(var(--bd) / 0.75)); }

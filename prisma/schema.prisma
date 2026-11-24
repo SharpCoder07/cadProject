@@ -1,0 +1,2299 @@
+// Cadgram — software discovery platform
+// Prisma schema (PostgreSQL)
+//
+// Conventions
+// - cuid() string ids everywhere; slugs are unique per entity type.
+// - Core entities are normalized. JSON is used only for: CMS block payloads
+//   (validated per block type with Zod), site settings values, integration
+//   (non-secret) config, revision snapshots and audit diffs.
+// - Full-text search: `Software.searchVector` (tsvector, GIN) is filled by the
+//   SQL function refresh_software_search(), defined in prisma/sql/search.sql and
+//   included in the initial migration. Trigram GIN indexes power typo-tolerant
+//   suggestions.
+// - Secrets are NEVER stored here. Integrations reference env var names.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+  binaryTargets   = ["native", "debian-openssl-3.0.x", "rhel-openssl-3.0.x", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  directUrl  = env("DIRECT_DATABASE_URL")
+  extensions = [pg_trgm, unaccent]
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Identity, roles, permissions, sessions
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum UserStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+}
+
+/// Staff, vendor-portal and buyer accounts. Vendor users have vendorId set
+/// and are confined to that vendor's data by server-side policy checks.
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  name         String
+  passwordHash String?
+  /// Set when an admin created the account with a password: the user must choose their own after signing in.
+  mustChangePassword Boolean @default(false)
+  status       UserStatus @default(ACTIVE)
+  roleId       String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  vendorId     String?
+  vendor       Vendor?    @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+  avatarUrl    String?
+  lastLoginAt  DateTime?
+  failedLogins Int        @default(0)
+  lockedUntil  DateTime?
+  /// Two-step verification (TOTP). Secrets are AES-256-GCM encrypted with a key derived from APP_SECRET.
+  /// Required for every account: sessions are only issued once the authenticator is confirmed.
+  totpSecretEnc    String?
+  /// A new authenticator being set up (first sign-in, or moving to a new phone); replaces totpSecretEnc once confirmed.
+  totpPendingEnc   String?
+  totpEnabledAt    DateTime?
+  /// Last accepted 30-second step, so a code can't be used twice.
+  totpLastStep     Int?
+  /// SHA-256 hashes of unused single-use backup codes.
+  backupCodeHashes String[]  @default([])
+  /// Email me when a product I favourited gets an offer.
+  offerEmails      Boolean   @default(true)
+  /// Vendor/reseller portal: when this person last opened Leads (leads after this count as new on the bell).
+  leadsSeenAt      DateTime?
+  /// Notification types this person switched off (bell and browser push).
+  notifyOff        String[]  @default([])
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  sessions          Session[]
+  authTokens        AuthToken[]
+  auditLogs         AuditLog[]
+  revisions         Revision[]
+  assignedLeads     Lead[]          @relation("LeadAssignee")
+  leadNotes         LeadNote[]
+  leadActivities    LeadActivity[]
+  uploadedMedia     MediaAsset[]
+  authorProfile     Author?
+  pagesUpdated      Page[]          @relation("PageUpdatedBy")
+  softwareUpdated   Software[]      @relation("SoftwareUpdatedBy")
+  approvalRequests  ApprovalRequest[] @relation("ApprovalRequester")
+  /// Reviews written from a buyer account.
+  reviews           Review[]
+  approvalDecisions ApprovalRequest[] @relation("ApprovalDecider")
+  deletionRequests  DeletionRequest[] @relation("DeletionRequester")
+  deletionDecisions DeletionRequest[] @relation("DeletionDecider")
+  purchasedSubscriptions VendorSubscription[] @relation("SubscriptionPurchaser")
+  favourites        ProductFavourite[]
+  questionsAsked    ProductQuestion[] @relation("QuestionAskedBy")
+  questionsAnswered ProductQuestion[] @relation("QuestionAnsweredBy")
+  offersCreated     ProductOffer[]  @relation("OfferCreatedBy")
+  notifications     Notification[]
+  pushSubscriptions PushSubscription[]
+  consents          UserConsent[]
+  cookiePreferences CookiePreference[]
+  legalAcceptances  LegalAcceptance[]
+  privacyCases      PrivacyCase[]      @relation("PrivacyCaseRequester")
+  assignedPrivacyCases PrivacyCase[]   @relation("PrivacyCaseAssignee")
+  privacyCaseEvents PrivacyCaseEvent[]
+  incidentsReported SecurityIncident[] @relation("IncidentReporter")
+  incidentsAssigned SecurityIncident[] @relation("IncidentAssignee")
+  incidentEvents    IncidentEvent[]
+
+  @@index([roleId])
+  @@index([vendorId])
+  @@index([status])
+}
+
+/// Built-in roles (isSystem) are seeded: SUPER_ADMIN, ADMIN, CONTENT_EDITOR,
+/// PRODUCT_MANAGER, SALES_MANAGER, ANALYST, VENDOR. Custom roles can be added.
+model Role {
+  id          String           @id @default(cuid())
+  key         String           @unique
+  name        String
+  description String?
+  isSystem    Boolean          @default(false)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  users       User[]
+  permissions RolePermission[]
+}
+
+/// Permission keys look like "software.publish", "leads.export".
+model Permission {
+  id          String           @id @default(cuid())
+  key         String           @unique
+  group       String
+  description String?
+  roles       RolePermission[]
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+}
+
+/// Server-side sessions. Only a SHA-256 hash of the cookie token is stored,
+/// so a database leak does not yield usable sessions. Revocable by admins.
+model Session {
+  id         String    @id @default(cuid())
+  tokenHash  String    @unique
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  lastSeenAt DateTime  @default(now())
+  ipAddress  String?
+  userAgent  String?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+enum AuthTokenType {
+  PASSWORD_RESET
+  INVITE
+  /// Password accepted; waiting for the authenticator code (10 minutes).
+  TWO_FACTOR
+  /// Buyer sign-up: confirms the email address (24 hours).
+  EMAIL_VERIFY
+}
+
+model AuthToken {
+  id         String        @id @default(cuid())
+  tokenHash  String        @unique
+  type       AuthTokenType
+  userId     String
+  user       User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime      @default(now())
+
+  @@index([userId, type])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Media library
+// ─────────────────────────────────────────────────────────────────────────────
+
+model MediaFolder {
+  id        String        @id @default(cuid())
+  name      String
+  parentId  String?
+  parent    MediaFolder?  @relation("FolderTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children  MediaFolder[] @relation("FolderTree")
+  assets    MediaAsset[]
+  createdAt DateTime      @default(now())
+
+  @@unique([parentId, name])
+}
+
+model MediaAsset {
+  id           String       @id @default(cuid())
+  storageKey   String       @unique
+  provider     String // "local" | "azure" | "s3"
+  url          String
+  filename     String
+  mimeType     String
+  sizeBytes    Int
+  width        Int?
+  height       Int?
+  alt          String?
+  caption      String?
+  checksum     String?
+  folderId     String?
+  folder       MediaFolder? @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  uploadedById String?
+  uploadedBy   User?        @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  softwareLogos     Software[]       @relation("SoftwareLogo")
+  softwareMedia     SoftwareMedia[]
+  vendorLogos       Vendor[]         @relation("VendorLogo")
+  brandLogos        Brand[]          @relation("BrandLogo")
+  categoryImages    Category[]       @relation("CategoryImage")
+  categoryBanners   Category[]       @relation("CategoryBanner")
+  industryImages    Industry[]       @relation("IndustryImage")
+  postCovers        Post[]           @relation("PostCover")
+  authorAvatars     Author[]         @relation("AuthorAvatar")
+  banners           Banner[]         @relation("BannerImage")
+  bannersMobile     Banner[]         @relation("BannerMobileImage")
+  testimonialAvatar Testimonial[]
+  seoOgImages       SeoMeta[]
+
+  @@index([folderId])
+  @@index([mimeType])
+  @@index([createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SEO
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 1:1 optional SEO overrides attached to any public entity. Empty fields fall
+/// back to computed defaults and the global SEO settings.
+model SeoMeta {
+  id             String      @id @default(cuid())
+  title          String?
+  description    String?
+  keywords       String?
+  canonicalUrl   String?
+  noIndex        Boolean     @default(false)
+  ogImageId      String?
+  ogImage        MediaAsset? @relation(fields: [ogImageId], references: [id], onDelete: SetNull)
+  /// Optional extra JSON-LD merged into generated structured data.
+  structuredData Json?
+  updatedAt      DateTime    @updatedAt
+
+  software       Software?
+  category       Category?
+  industry       Industry?
+  vendor         Vendor?
+  page           Page?
+  post           Post?
+  comparisonPage ComparisonPage?
+  brand          Brand?
+}
+
+model Redirect {
+  id         String   @id @default(cuid())
+  fromPath   String   @unique
+  toPath     String
+  statusCode Int      @default(301)
+  isActive   Boolean  @default(true)
+  hits       Int      @default(0)
+  note       String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Vendors & brands
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum VerificationStatus {
+  UNVERIFIED
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+model Vendor {
+  id                 String             @id @default(cuid())
+  name               String
+  slug               String             @unique
+  legalName          String?
+  description        String?
+  website            String?
+  email              String?
+  phone              String?
+  addressLine        String?
+  city               String?
+  state              String?
+  country            String?            @default("India")
+  foundedYear        Int?
+  employeeRange      String?
+  logoId             String?
+  logo               MediaAsset?        @relation("VendorLogo", fields: [logoId], references: [id], onDelete: SetNull)
+  verification       VerificationStatus @default(UNVERIFIED)
+  verifiedAt         DateTime?
+  /// Legacy flag. Vendor-portal users never publish directly: every create, edit,
+  /// publish, unpublish and delete goes through an ApprovalRequest.
+  canPublish         Boolean            @default(false)
+  /// Lets the vendor portal see enquiries for its products.
+  receivesLeads      Boolean            @default(true)
+  /// VENDOR: a software company that owns products. RESELLER: a channel partner that resells
+  /// other vendors' products. Both use the same portal, team, approvals and plans.
+  kind               PartnerKind        @default(VENDOR)
+  /// Resellers: the cities they serve (shown on product pages next to their name).
+  serviceCities      String[]           @default([])
+  isActive           Boolean            @default(true)
+  seoId              String?            @unique
+  seo                SeoMeta?           @relation(fields: [seoId], references: [id], onDelete: SetNull)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  brands    Brand[]
+  software  Software[]
+  users     User[]
+  leads     Lead[]             @relation("LeadVendor")
+  /// Resellers: enquiries for the products they resell (shared automatically when the enquiry arrives).
+  resellerLeads      LeadReseller[]
+  /// Resellers: products they're approved to resell.
+  authorisedProducts ResellerProduct[]
+  subscriptions VendorSubscription[]
+  geoPages      GeoPage[]
+  approvals ApprovalRequest[]
+
+  @@index([verification])
+  @@index([kind])
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "Vendor_name_trgm_idx")
+  compliance VendorCompliance?
+}
+
+/// A software brand (the maker shown to buyers, e.g. Autodesk or Tally). Standalone: any product can
+/// carry one, whoever lists it. `vendorId` is optional and only links a brand to the company that owns it.
+model Brand {
+  id          String      @id @default(cuid())
+  name        String
+  slug        String      @unique
+  description String?
+  website     String?
+  vendorId    String?
+  vendor      Vendor?     @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+  logoId      String?
+  logo        MediaAsset? @relation("BrandLogo", fields: [logoId], references: [id], onDelete: SetNull)
+  isActive    Boolean     @default(true)
+  /// Lower numbers first in the homepage logo strip and the brands page.
+  sortOrder   Int         @default(0)
+  seoId       String?     @unique
+  seo         SeoMeta?    @relation(fields: [seoId], references: [id], onDelete: SetNull)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  software    Software[]
+
+  @@index([vendorId])
+  @@index([isActive, sortOrder])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Taxonomy: categories (nested), industries, tags
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Category {
+  id          String      @id @default(cuid())
+  name        String
+  slug        String      @unique
+  shortName   String?
+  description String?
+  /// Long-form intro shown on the category page (sanitized HTML).
+  content     String?
+  icon        String? // lucide icon name
+  parentId    String?
+  parent      Category?   @relation("CategoryTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children    Category[]  @relation("CategoryTree")
+  depth       Int         @default(0)
+  /// Materialized path of ancestor ids, e.g. "/rootId/childId/". Kept in sync in a transaction.
+  path        String      @default("/")
+  sortOrder   Int         @default(0)
+  isActive    Boolean     @default(true)
+  showInNav   Boolean     @default(true)
+  imageId     String?
+  image       MediaAsset? @relation("CategoryImage", fields: [imageId], references: [id], onDelete: SetNull)
+  bannerId    String?
+  banner      MediaAsset? @relation("CategoryBanner", fields: [bannerId], references: [id], onDelete: SetNull)
+  /// Page layout config: visible sections, default sort, grid/list. Validated by Zod.
+  layout      Json?
+  seoId       String?     @unique
+  seo         SeoMeta?    @relation(fields: [seoId], references: [id], onDelete: SetNull)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  software         SoftwareCategory[]
+  primarySoftware  Software[]          @relation("PrimaryCategory")
+  attributes       CategoryAttribute[]
+  featured         CategoryFeatured[]
+  menuItems        MenuItem[]
+
+  @@index([parentId, sortOrder])
+  @@index([path])
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "Category_name_trgm_idx")
+}
+
+/// Hand-picked featured products per category, ordered.
+model CategoryFeatured {
+  categoryId String
+  softwareId String
+  sortOrder  Int      @default(0)
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  software   Software @relation(fields: [softwareId], references: [id], onDelete: Cascade)
+
+  @@id([categoryId, softwareId])
+  @@index([softwareId])
+}
+
+model Industry {
+  id          String             @id @default(cuid())
+  name        String
+  slug        String             @unique
+  description String?
+  content     String?
+  icon        String?
+  imageId     String?
+  image       MediaAsset?        @relation("IndustryImage", fields: [imageId], references: [id], onDelete: SetNull)
+  sortOrder   Int                @default(0)
+  isActive    Boolean            @default(true)
+  seoId       String?            @unique
+  seo         SeoMeta?           @relation(fields: [seoId], references: [id], onDelete: SetNull)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  software    SoftwareIndustry[]
+}
+
+model Tag {
+  id       String        @id @default(cuid())
+  name     String
+  slug     String        @unique
+  software SoftwareTag[]
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Configurable attributes (specifications + filters + comparison rows)
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum AttributeType {
+  BOOLEAN
+  SELECT
+  MULTISELECT
+  NUMBER
+  TEXT
+}
+
+/// Admin-defined attribute, e.g. "Supported Platforms" (MULTISELECT),
+/// "GST Compliant" (BOOLEAN), "Max Users" (NUMBER).
+model Attribute {
+  id           String        @id @default(cuid())
+  key          String        @unique
+  label        String
+  type         AttributeType
+  group        String        @default("General")
+  unit         String?
+  description  String?
+  isFilterable Boolean       @default(false)
+  isComparable Boolean       @default(true)
+  showOnDetail Boolean       @default(true)
+  sortOrder    Int           @default(0)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  options    AttributeOption[]
+  categories CategoryAttribute[]
+  values     SoftwareAttributeValue[]
+}
+
+model AttributeOption {
+  id          String                   @id @default(cuid())
+  attributeId String
+  attribute   Attribute                @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+  value       String
+  label       String
+  sortOrder   Int                      @default(0)
+  values      SoftwareAttributeValue[]
+
+  @@unique([attributeId, value])
+}
+
+/// Which attributes apply (and filter) on which category pages.
+model CategoryAttribute {
+  categoryId  String
+  attributeId String
+  sortOrder   Int       @default(0)
+  isFilter    Boolean   @default(true)
+  category    Category  @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  attribute   Attribute @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+
+  @@id([categoryId, attributeId])
+  @@index([attributeId])
+}
+
+/// One row per (software, attribute[, option]). MULTISELECT stores one row per
+/// selected option, which keeps filtering a plain indexed join.
+model SoftwareAttributeValue {
+  id          String           @id @default(cuid())
+  softwareId  String
+  attributeId String
+  optionId    String?
+  valueText   String?
+  valueNumber Decimal?         @db.Decimal(14, 2)
+  valueBool   Boolean?
+  software    Software         @relation(fields: [softwareId], references: [id], onDelete: Cascade)
+  attribute   Attribute        @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+  option      AttributeOption? @relation(fields: [optionId], references: [id], onDelete: Cascade)
+
+  @@unique([softwareId, attributeId, optionId])
+  @@index([attributeId, optionId])
+  @@index([attributeId, valueBool])
+  @@index([attributeId, valueNumber])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Software
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum PublishStatus {
+  DRAFT
+  IN_REVIEW
+  PUBLISHED
+  ARCHIVED
+}
+
+enum PricingModel {
+  FREE
+  FREEMIUM
+  SUBSCRIPTION
+  ONE_TIME
+  USAGE_BASED
+  QUOTE_BASED
+}
+
+enum DeploymentType {
+  CLOUD
+  ON_PREMISE
+  HYBRID
+  MOBILE
+  DESKTOP
+}
+
+enum BillingPeriod {
+  MONTHLY
+  QUARTERLY
+  YEARLY
+  ONE_TIME
+  CUSTOM
+}
+
+model Software {
+  id                String           @id @default(cuid())
+  name              String
+  slug              String           @unique
+  /// Product ID on the previous website (old links like /compare/?products[]=97061 redirect with it).
+  legacyId          Int?             @unique
+  tagline           String?
+  shortDescription  String?
+  /// Sanitized HTML from the rich-text editor.
+  description       String?
+  status            PublishStatus    @default(DRAFT)
+  publishedAt       DateTime?
+  scheduledAt       DateTime?
+  vendorId          String?
+  vendor            Vendor?          @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+  brandId           String?
+  brand             Brand?           @relation(fields: [brandId], references: [id], onDelete: SetNull)
+  primaryCategoryId String?
+  primaryCategory   Category?        @relation("PrimaryCategory", fields: [primaryCategoryId], references: [id], onDelete: SetNull)
+  logoId            String?
+  logo              MediaAsset?      @relation("SoftwareLogo", fields: [logoId], references: [id], onDelete: SetNull)
+  websiteUrl        String?
+  demoVideoUrl      String?
+
+  pricingModel      PricingModel     @default(SUBSCRIPTION)
+  startingPrice     Decimal?         @db.Decimal(12, 2)
+  currency          String           @default("INR")
+  priceUnit         String? // e.g. "per user / month"
+  priceIncludesGst  Boolean          @default(false)
+  hasFreeTrial      Boolean          @default(false)
+  hasFreeVersion    Boolean          @default(false)
+  deployment        DeploymentType[]
+  /// Editorial assessment shown on the product page (staff-only).
+  pros              String[]         @default([])
+  cons              String[]         @default([])
+  /// "Who should choose this product?" — short sentences.
+  bestFor           String?
+  notIdealFor       String?
+
+  isFeatured        Boolean          @default(false)
+  isPopular         Boolean          @default(false)
+  isTrending        Boolean          @default(false)
+  isRecommended     Boolean          @default(false)
+  isSponsored       Boolean          @default(false)
+  sponsoredRank     Int?
+
+  // Denormalized counters (kept in sync by services) for fast sorting.
+  ratingAvg         Decimal          @default(0) @db.Decimal(3, 2)
+  ratingCount       Int              @default(0)
+  viewCount         Int              @default(0)
+  enquiryCount      Int              @default(0)
+  popularityScore   Float            @default(0)
+
+  /// Generated column maintained by Postgres; see search migration.
+  searchVector      Unsupported("tsvector")?
+
+  seoId             String?          @unique
+  seo               SeoMeta?         @relation(fields: [seoId], references: [id], onDelete: SetNull)
+  updatedById       String?
+  updatedBy         User?            @relation("SoftwareUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  categories      SoftwareCategory[]
+  industries      SoftwareIndustry[]
+  tags            SoftwareTag[]
+  features        SoftwareFeature[]
+  plans           PricingPlan[]
+  media           SoftwareMedia[]
+  faqs            SoftwareFaq[]
+  resellers       ResellerProduct[]
+  offers          ProductOffer[]
+  favouritedBy    ProductFavourite[]
+  terms           SoftwareTerm[]
+  promotedOnTerms TaxonomyTerm[]  @relation("TermPromoted")
+  geoPages        GeoPage[]
+  attributes      SoftwareAttributeValue[]
+  releases        SoftwareRelease[]
+  reviews         Review[]
+  related         RelatedSoftware[]        @relation("RelatedFrom")
+  relatedTo       RelatedSoftware[]        @relation("RelatedTo")
+  comparisonItems ComparisonItem[]
+  leadItems       LeadSoftware[]
+  featuredIn      CategoryFeatured[]
+  postLinks       PostSoftware[]
+  dailyStats      SoftwareDailyStat[]
+  questions       ProductQuestion[]
+
+  @@index([status, publishedAt])
+  @@index([vendorId])
+  @@index([primaryCategoryId, status])
+  @@index([status, popularityScore(sort: Desc)])
+  @@index([status, isFeatured])
+  @@index([pricingModel])
+  @@index([startingPrice])
+  @@index([searchVector], type: Gin)
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "Software_name_trgm_idx")
+  @@index([deployment], type: Gin)
+}
+
+model SoftwareCategory {
+  softwareId String
+  categoryId String
+  isPrimary  Boolean  @default(false)
+  software   Software @relation(fields: [softwareId], references: [id], onDelete: Cascade)
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([softwareId, categoryId])
+  @@index([categoryId])
+}
+
+model SoftwareIndustry {
+  softwareId String
+  industryId String
+  software   Software @relation(fields: [softwareId], references: [id], onDelete: Cascade)
+  industry   Industry @relation(fields: [industryId], references: [id], onDelete: Cascade)
+
+  @@id([softwareId, industryId])
+  @@index([industryId])
+}
+
+model SoftwareTag {
+  softwareId String
+  tagId      String
+  software   Software @relation(fields: [softwareId], references: [id], onDelete: Cascade)
+  tag        Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([softwareId, tagId])
+  @@index([tagId])
+}
+
+model SoftwareFeature {
+  id          String   @id @default(cuid())
+  softwareId  String
+  software    Software @relation(fields: [softwareId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  icon        String?
+  sortOrder   Int      @default(0)
+
+  @@index([softwareId, sortOrder])
+}
+
+model PricingPlan {
+  id            String        @id @default(cuid())
+  softwareId    String
+  software      Software      @relation(fields: [softwareId], references: [id], onDelete: Cascade)
+  name          String
+  price         Decimal?      @db.Decimal(12, 2)
+  currency      String        @default("INR")
+  billingPeriod BillingPeriod @default(MONTHLY)
+  priceUnit     String?
+  description   String?
+  features      String[]
+  isPopular     Boolean       @default(false)
+  ctaLabel      String?
+  sortOrder     Int           @default(0)
+
+  @@index([softwareId, sortOrder])
+}
+
+enum SoftwareMediaKind {
+  SCREENSHOT
+  VIDEO
+  DOCUMENT
+}
+
+model SoftwareMedia {
+  id         String            @id @default(cuid())
+  softwareId String
+  software   Software          @relation(fields: [softwareId], references: [id], onDelete: Cascade)
+  kind       SoftwareMediaKind @default(SCREENSHOT)
+  mediaId    String?
+  media      MediaAsset?       @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+  videoUrl   String?
+  caption    String?
+  sortOrder  Int               @default(0)
+
+  @@index([softwareId, sortOrder])
+}
+
+model SoftwareFaq {
+  id         String   @id @default(cuid())
+  softwareId String
+  software   Software @relation(fields: [softwareId], references: [id], onDelete: Cascade)
+  question   String
+  answer     String
+  sortOrder  Int      @default(0)
+
+  @@index([softwareId, sortOrder])
+}
+
+model SoftwareRelease {
+  id         String    @id @default(cuid())
+  softwareId String
+  software   Software  @relation(fields: [softwareId], references: [id], onDelete: Cascade)
+  version    String
+  releasedAt DateTime?
+  notes      String?
+
+  @@unique([softwareId, version])
+}
+
+enum RelationKind {
+  RELATED
+  ALTERNATIVE
+}
+
+model RelatedSoftware {
+  softwareId String
+  relatedId  String
+  kind       RelationKind @default(RELATED)
+  sortOrder  Int          @default(0)
+  software   Software     @relation("RelatedFrom", fields: [softwareId], references: [id], onDelete: Cascade)
+  related    Software     @relation("RelatedTo", fields: [relatedId], references: [id], onDelete: Cascade)
+
+  @@id([softwareId, relatedId, kind])
+  @@index([relatedId])
+}
+
+/// Daily rollups for dashboard charts (views from product page, enquiries).
+model SoftwareDailyStat {
+  softwareId String
+  date       DateTime @db.Date
+  views      Int      @default(0)
+  enquiries  Int      @default(0)
+  software   Software @relation(fields: [softwareId], references: [id], onDelete: Cascade)
+
+  @@id([softwareId, date])
+  @@index([date])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reviews (moderated; visitors submit with email, admins approve)
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum ModerationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model Review {
+  id             String           @id @default(cuid())
+  softwareId     String
+  software       Software         @relation(fields: [softwareId], references: [id], onDelete: Cascade)
+  /// The buyer account that wrote it (older reviews were anonymous). One review per product per buyer.
+  userId         String?
+  user           User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  authorName     String
+  authorEmail    String
+  authorRole     String?
+  companyName    String?
+  companySize    String?
+  rating         Int
+  ratingEase     Int?
+  ratingValue    Int?
+  ratingSupport  Int?
+  ratingFeatures Int?
+  title          String
+  pros           String?
+  cons           String?
+  body           String
+  status         ModerationStatus @default(PENDING)
+  moderatedAt    DateTime?
+  ipHash         String?
+  /// Public response from the product's vendor (set only when a Super Admin approves it).
+  vendorReply    String?
+  vendorReplyAt  DateTime?
+  createdAt      DateTime         @default(now())
+
+  @@unique([softwareId, userId])
+  @@index([softwareId, status, createdAt])
+  @@index([status])
+  @@index([userId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Curated comparisons (dynamic /compare?ids=… works without these)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ComparisonPage {
+  id          String           @id @default(cuid())
+  slug        String           @unique
+  title       String
+  intro       String?
+  verdict     String?
+  /// Content blocks shown below the comparison table (see src/lib/comparison-sections.ts).
+  sections    Json             @default("[]")
+  status      PublishStatus    @default(DRAFT)
+  publishedAt DateTime?
+  seoId       String?          @unique
+  seo         SeoMeta?         @relation(fields: [seoId], references: [id], onDelete: SetNull)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  items       ComparisonItem[]
+}
+
+model ComparisonItem {
+  comparisonId String
+  softwareId   String
+  sortOrder    Int            @default(0)
+  comparison   ComparisonPage @relation(fields: [comparisonId], references: [id], onDelete: Cascade)
+  software     Software       @relation(fields: [softwareId], references: [id], onDelete: Cascade)
+
+  @@id([comparisonId, softwareId])
+  @@index([softwareId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CMS: pages, sections, reusable blocks, banners, menus, announcements
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum PageTemplate {
+  DEFAULT
+  LANDING
+  LEGAL
+  CONTACT
+  HOMEPAGE
+}
+
+/// The homepage is the system page with slug "home" (template HOMEPAGE).
+model Page {
+  id          String        @id @default(cuid())
+  title       String
+  slug        String        @unique
+  template    PageTemplate  @default(DEFAULT)
+  status      PublishStatus @default(DRAFT)
+  isSystem    Boolean       @default(false)
+  publishedAt DateTime?
+  scheduledAt DateTime?
+  /// Secret for draft previews (/api/preview?page=…&token=…).
+  previewKey  String        @unique @default(cuid())
+  seoId       String?       @unique
+  seo         SeoMeta?      @relation(fields: [seoId], references: [id], onDelete: SetNull)
+  updatedById String?
+  updatedBy   User?         @relation("PageUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  sections    PageSection[]
+  menuItems   MenuItem[]
+
+  @@index([status, publishedAt])
+}
+
+/// Block types: HERO, BANNER_CAROUSEL, FEATURED_SOFTWARE, SOFTWARE_TABS,
+/// CATEGORY_GRID, INDUSTRY_GRID, RICH_TEXT, CTA, TESTIMONIALS, FAQ,
+/// LOGO_CLOUD, OFFERS, BLOG_POSTS, STATS, COMPARISONS, LEAD_FORM.
+/// `data` is validated by the Zod schema registered for `type`.
+model PageSection {
+  id              String         @id @default(cuid())
+  pageId          String
+  page            Page           @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  type            String
+  label           String?
+  sortOrder       Int            @default(0)
+  isEnabled       Boolean        @default(true)
+  data            Json?
+  /// When set, renders the reusable block instead of `data`.
+  reusableBlockId String?
+  reusableBlock   ReusableBlock? @relation(fields: [reusableBlockId], references: [id], onDelete: SetNull)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@index([pageId, sortOrder])
+}
+
+model ReusableBlock {
+  id        String        @id @default(cuid())
+  name      String
+  type      String
+  data      Json
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  usages    PageSection[]
+}
+
+model Banner {
+  id            String      @id @default(cuid())
+  title         String
+  subtitle      String?
+  /// Placement key, e.g. "home.hero", "listing.top", "detail.sidebar".
+  placement     String
+  imageId       String?
+  image         MediaAsset? @relation("BannerImage", fields: [imageId], references: [id], onDelete: SetNull)
+  mobileImageId String?
+  mobileImage   MediaAsset? @relation("BannerMobileImage", fields: [mobileImageId], references: [id], onDelete: SetNull)
+  ctaLabel      String?
+  ctaUrl        String?
+  theme         String? // "light" | "dark" | "brand"
+  startsAt      DateTime?
+  endsAt        DateTime?
+  isActive      Boolean     @default(true)
+  sortOrder     Int         @default(0)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@index([placement, isActive, sortOrder])
+}
+
+model Announcement {
+  id        String    @id @default(cuid())
+  message   String
+  linkLabel String?
+  linkUrl   String?
+  variant   String    @default("info") // info | promo | warning
+  startsAt  DateTime?
+  endsAt    DateTime?
+  isActive  Boolean   @default(true)
+  sortOrder Int       @default(0)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+/// Menus are addressed by key: "header", "footer.products", "footer.company"…
+model Menu {
+  id        String     @id @default(cuid())
+  key       String     @unique
+  name      String
+  items     MenuItem[]
+  updatedAt DateTime   @updatedAt
+}
+
+model MenuItem {
+  id           String     @id @default(cuid())
+  menuId       String
+  menu         Menu       @relation(fields: [menuId], references: [id], onDelete: Cascade)
+  parentId     String?
+  parent       MenuItem?  @relation("MenuTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children     MenuItem[] @relation("MenuTree")
+  label        String
+  /// Either a free URL or a link to a page/category (resolved at render time).
+  url          String?
+  pageId       String?
+  page         Page?      @relation(fields: [pageId], references: [id], onDelete: SetNull)
+  categoryId   String?
+  category     Category?  @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  badge        String?
+  openInNewTab Boolean    @default(false)
+  isActive     Boolean    @default(true)
+  sortOrder    Int        @default(0)
+
+  @@index([menuId, parentId, sortOrder])
+}
+
+model Testimonial {
+  id        String      @id @default(cuid())
+  name      String
+  role      String?
+  company   String?
+  quote     String
+  rating    Int?
+  avatarId  String?
+  avatar    MediaAsset? @relation(fields: [avatarId], references: [id], onDelete: SetNull)
+  isActive  Boolean     @default(true)
+  sortOrder Int         @default(0)
+  createdAt DateTime    @default(now())
+}
+
+/// Site-wide FAQ groups (e.g. "general", "vendors") used by FAQ page/blocks.
+model FaqGroup {
+  id        String    @id @default(cuid())
+  key       String    @unique
+  title     String
+  sortOrder Int       @default(0)
+  items     FaqItem[]
+}
+
+model FaqItem {
+  id        String   @id @default(cuid())
+  groupId   String
+  group     FaqGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  question  String
+  answer    String
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+
+  @@index([groupId, sortOrder])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Blog / resources
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum PostType {
+  ARTICLE
+  GUIDE
+  NEWS
+  RESOURCE
+}
+
+model Author {
+  id       String      @id @default(cuid())
+  name     String
+  slug     String      @unique
+  bio      String?
+  jobTitle String?
+  avatarId String?
+  avatar   MediaAsset? @relation("AuthorAvatar", fields: [avatarId], references: [id], onDelete: SetNull)
+  userId   String?     @unique
+  user     User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  posts    Post[]
+}
+
+model BlogCategory {
+  id          String  @id @default(cuid())
+  name        String
+  slug        String  @unique
+  description String?
+  sortOrder   Int     @default(0)
+  posts       Post[]
+}
+
+model BlogTag {
+  id    String    @id @default(cuid())
+  name  String
+  slug  String    @unique
+  posts PostTag[]
+}
+
+model Post {
+  id             String         @id @default(cuid())
+  title          String
+  slug           String         @unique
+  type           PostType       @default(ARTICLE)
+  excerpt        String?
+  content        String
+  status         PublishStatus  @default(DRAFT)
+  publishedAt    DateTime?
+  scheduledAt    DateTime?
+  previewKey     String         @unique @default(cuid())
+  readingMinutes Int            @default(1)
+  isFeatured     Boolean        @default(false)
+  coverId        String?
+  cover          MediaAsset?    @relation("PostCover", fields: [coverId], references: [id], onDelete: SetNull)
+  authorId       String?
+  author         Author?        @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  categoryId     String?
+  category       BlogCategory?  @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  seoId          String?        @unique
+  seo            SeoMeta?       @relation(fields: [seoId], references: [id], onDelete: SetNull)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  tags           PostTag[]
+  software       PostSoftware[]
+
+  @@index([status, publishedAt(sort: Desc)])
+  @@index([categoryId])
+  @@index([authorId])
+}
+
+model PostTag {
+  postId String
+  tagId  String
+  post   Post    @relation(fields: [postId], references: [id], onDelete: Cascade)
+  tag    BlogTag @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([postId, tagId])
+  @@index([tagId])
+}
+
+model PostSoftware {
+  postId     String
+  softwareId String
+  post       Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  software   Software @relation(fields: [softwareId], references: [id], onDelete: Cascade)
+
+  @@id([postId, softwareId])
+  @@index([softwareId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Leads & enquiries
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  DEMO_SCHEDULED
+  PROPOSAL
+  WON
+  LOST
+  SPAM
+}
+
+enum LeadSource {
+  PRODUCT_PAGE
+  CATEGORY_PAGE
+  COMPARE_PAGE
+  CONTACT_PAGE
+  CMS_FORM
+  GET_ADVICE
+  LIST_SOFTWARE
+  BECOME_RESELLER
+}
+
+/// What the buyer asked for: set from the button or form they used; the team can change it.
+enum LeadType {
+  ENQUIRY
+  QUOTE
+  DEMO
+  TRIAL
+  PURCHASE
+  CALLBACK
+  PARTNERSHIP
+}
+
+enum LeadPriority {
+  LOW
+  NORMAL
+  HIGH
+}
+
+model Lead {
+  id             String         @id @default(cuid())
+  referenceNo    String         @unique // human-friendly, e.g. "CG-24F9K2"
+  name           String
+  email          String
+  phone          String
+  company        String?
+  companySize    String?
+  city           String?
+  requirement    String?
+  message        String?
+  source         LeadSource
+  type           LeadType       @default(ENQUIRY)
+  sourceUrl      String?
+  utmSource      String?
+  utmMedium      String?
+  utmCampaign    String?
+  status         LeadStatus     @default(NEW)
+  priority       LeadPriority   @default(NORMAL)
+  assignedToId   String?
+  assignedTo     User?          @relation("LeadAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  /// Vendor whose product the lead concerns (for vendor-portal visibility).
+  vendorId       String?
+  vendor         Vendor?        @relation("LeadVendor", fields: [vendorId], references: [id], onDelete: SetNull)
+  nextFollowUpAt DateTime?
+  consent        Boolean        @default(false)
+  ipHash         String?
+  userAgent      String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  software      LeadSoftware[]
+  /// Every reseller of the enquired products; their portal shows the lead, masked until they have a plan.
+  resellers     LeadReseller[]
+  notes         LeadNote[]
+  activities    LeadActivity[]
+  notifications NotificationLog[]
+
+  @@index([status, createdAt(sort: Desc)])
+  @@index([assignedToId, status])
+  @@index([vendorId, createdAt(sort: Desc)])
+  @@index([createdAt])
+  @@index([email])
+  @@index([nextFollowUpAt])
+  @@index([type, createdAt(sort: Desc)])
+}
+
+model LeadSoftware {
+  leadId     String
+  softwareId String
+  lead       Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  software   Software @relation(fields: [softwareId], references: [id], onDelete: Cascade)
+
+  @@id([leadId, softwareId])
+  @@index([softwareId])
+}
+
+model LeadNote {
+  id        String   @id @default(cuid())
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  authorId  String?
+  author    User?    @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  body      String
+  createdAt DateTime @default(now())
+
+  @@index([leadId, createdAt])
+}
+
+enum LeadActivityType {
+  CREATED
+  STATUS_CHANGED
+  ASSIGNED
+  NOTE_ADDED
+  FOLLOW_UP_SET
+  PRIORITY_CHANGED
+  NOTIFICATION_SENT
+  RESELLER_ASSIGNED
+}
+
+model LeadActivity {
+  id        String           @id @default(cuid())
+  leadId    String
+  lead      Lead             @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  type      LeadActivityType
+  fromValue String?
+  toValue   String?
+  actorId   String?
+  actor     User?            @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  createdAt DateTime         @default(now())
+
+  @@index([leadId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Settings, integrations, notifications
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Key-value website settings; each key has a Zod schema in src/server/settings.
+/// Never store secrets here.
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+/// Non-secret integration config. Secrets are read from env vars whose NAMES
+/// are listed in the integration registry (src/server/integrations).
+model Integration {
+  key       String   @id // "email", "analytics", "webhook.leads", "slack.leads"
+  isEnabled Boolean  @default(false)
+  config    Json     @default("{}")
+  updatedAt DateTime @updatedAt
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+  SKIPPED
+}
+
+model NotificationLog {
+  id        String             @id @default(cuid())
+  channel   String // "email" | "webhook" | "slack"
+  target    String
+  event     String // "lead.created"
+  status    NotificationStatus @default(PENDING)
+  error     String?
+  attempts  Int                @default(0)
+  leadId    String?
+  lead      Lead?              @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  createdAt DateTime           @default(now())
+  sentAt    DateTime?
+
+  @@index([status, createdAt])
+  @@index([leadId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Audit, revisions, operational tables
+// ─────────────────────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action     String // "software.publish", "user.role_change", "settings.update"
+  entityType String
+  entityId   String?
+  summary    String?
+  diff       Json?
+  ipAddress  String?
+  userAgent  String?
+  /// Who acted: staff | vendor | buyer | public | system (compliance reporting).
+  actorType  String   @default("staff")
+  /// success | failure | denied
+  result     String   @default("success")
+  /// Extra non-sensitive context (never passwords, tokens or unnecessary personal data).
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId, createdAt])
+  @@index([result, createdAt])
+  @@index([createdAt(sort: Desc)])
+  @@index([action])
+}
+
+/// Full snapshots of a page/post/software at save time, for history + restore.
+model Revision {
+  id         String   @id @default(cuid())
+  entityType String // "page" | "post" | "software"
+  entityId   String
+  version    Int
+  snapshot   Json
+  message    String?
+  authorId   String?
+  author     User?    @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  createdAt  DateTime @default(now())
+
+  @@unique([entityType, entityId, version])
+  @@index([entityType, entityId, createdAt(sort: Desc)])
+}
+
+/// Fixed-window rate limit buckets. Works on any host without Redis; swap for
+/// Upstash via RATE_LIMIT_DRIVER=upstash for very high traffic.
+model RateLimitBucket {
+  key     String   @id
+  count   Int
+  resetAt DateTime
+
+  @@index([resetAt])
+}
+
+model SearchQueryLog {
+  id          String   @id @default(cuid())
+  query       String
+  resultCount Int
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([query])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Vendor approval workflow: every vendor-portal change waits here until a
+// Super Admin approves (applies it) or rejects it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum ApprovalEntity {
+  SOFTWARE
+  VENDOR_PROFILE
+  REVIEW_REPLY
+  /// An offer on one of the vendor's products (create, edit, remove).
+  OFFER
+  /// A vendor-portal user account: add, change access/name/photo, remove, password.
+  VENDOR_USER
+  /// A reseller asking to resell a product (create, edit partner level, remove).
+  RESELLER_PRODUCT
+}
+
+enum ApprovalAction {
+  CREATE
+  UPDATE
+  DELETE
+  PUBLISH
+  UNPUBLISH
+  /// Password change (own, stored only as a hash) or reset link for a teammate.
+  PASSWORD
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+/// An error anywhere in the project (website, admin, portals, APIs), for Logs › Error logs. Repeats of the same
+/// error are grouped on one row (count, first and last seen) while it's pending.
+model ErrorLog {
+  id           String    @id @default(cuid())
+  /// UI | BACKEND | SERVER | DATABASE | NETWORK
+  type         String
+  /// PENDING | RESOLVED
+  status       String    @default("PENDING")
+  message      String
+  /// Stack trace and other technical details.
+  details      String?
+  /// Where it happened: page or API path, server action, component.
+  source       String?
+  method       String?
+  statusCode   Int?
+  /// Next.js error reference shown to visitors ("Reference: …").
+  digest       String?
+  /// Same error = same fingerprint (type, message with numbers and ids taken out, place).
+  fingerprint  String
+  count        Int       @default(1)
+  firstSeenAt  DateTime  @default(now())
+  lastSeenAt   DateTime  @default(now())
+  userId       String?
+  userName     String?
+  userAgent    String?
+  /// Set when an error marked resolved happened again.
+  reopenedAt   DateTime?
+  resolvedAt   DateTime?
+  resolvedById String?
+  resolvedByName String?
+  note         String?
+
+  @@index([status, lastSeenAt(sort: Desc)])
+  @@index([type, status])
+  @@index([fingerprint])
+}
+
+/// A deletion someone asked for without the Delete permission (a record, or elements removed inside one,
+/// e.g. a page section or a menu item). Only the Super Admin approves; approving runs it with their authority.
+model DeletionRequest {
+  id            String         @id @default(cuid())
+  /// What to run on approval, e.g. "software", "page.sections" (server/rbac/deletion.ts).
+  kind          String
+  /// The Delete permission it needed, e.g. "software.delete".
+  permission    String
+  /// Arguments for the deletion (ids, or the full proposed change when elements are removed).
+  args          Json
+  label         String
+  /// What exactly goes, e.g. "Section “FAQ” · 2 list items".
+  detail        String?
+  /// Fingerprint of the record when asked; approval is refused if it has changed since.
+  baseline      String?
+  status        ApprovalStatus @default(PENDING)
+  note          String?
+  decisionNote  String?
+  vendorId      String?
+  requestedById String?
+  requestedBy   User?          @relation("DeletionRequester", fields: [requestedById], references: [id], onDelete: SetNull)
+  decidedById   String?
+  decidedBy     User?          @relation("DeletionDecider", fields: [decidedById], references: [id], onDelete: SetNull)
+  decidedAt     DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@index([status, createdAt])
+  @@index([requestedById, status])
+  @@index([kind, status])
+}
+
+model ApprovalRequest {
+  id            String         @id @default(cuid())
+  entityType    ApprovalEntity
+  /// Target record (software, vendor or review id).
+  entityId      String
+  /// Human-readable name at request time, e.g. the product name.
+  entityLabel   String
+  action        ApprovalAction
+  /// Proposed data (UPDATE / review reply); applied on approval.
+  payload       Json?
+  /// The live data when the request was made, for the side-by-side diff.
+  before        Json?
+  status        ApprovalStatus @default(PENDING)
+  /// Optional message from the vendor.
+  note          String?
+  /// Reason given by the Super Admin (required when rejecting).
+  decisionNote  String?
+  vendorId      String
+  vendor        Vendor         @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  requestedById String?
+  requestedBy   User?          @relation("ApprovalRequester", fields: [requestedById], references: [id], onDelete: SetNull)
+  decidedById   String?
+  decidedBy     User?          @relation("ApprovalDecider", fields: [decidedById], references: [id], onDelete: SetNull)
+  decidedAt     DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@index([status, createdAt])
+  @@index([vendorId, status])
+  @@index([entityType, entityId, status])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Vendor plans & subscriptions (paid with Razorpay). An active subscription
+// unlocks buyer email addresses and phone numbers on the vendor's leads.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum BillingInterval {
+  MONTH
+  QUARTER
+  HALF_YEAR
+  YEAR
+}
+
+enum SubscriptionStatus {
+  /// Checkout started, payment not confirmed yet.
+  PENDING
+  ACTIVE
+  CANCELLED
+}
+
+enum SubscriptionSource {
+  RAZORPAY
+  /// Granted by an admin (e.g. paid offline, or a free trial).
+  MANUAL
+}
+
+model VendorPlan {
+  id          String          @id @default(cuid())
+  name        String
+  description String?
+  /// Price in paise, GST included.
+  pricePaise  Int
+  interval    BillingInterval @default(YEAR)
+  features    String[]        @default([])
+  isActive    Boolean         @default(true)
+  /// Shown as "Most popular".
+  isFeatured  Boolean         @default(false)
+  /// Who can buy it: vendors or resellers.
+  audience    PartnerKind     @default(VENDOR)
+  sortOrder   Int             @default(0)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  subscriptions VendorSubscription[]
+
+  @@index([isActive, sortOrder])
+  @@index([audience, isActive])
+}
+
+enum PartnerKind {
+  VENDOR
+  RESELLER
+}
+
+/// An enquiry shared with a reseller because they resell one of the enquired products.
+model LeadReseller {
+  leadId     String
+  lead       Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  resellerId String
+  reseller   Vendor   @relation(fields: [resellerId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  @@id([leadId, resellerId])
+  @@index([resellerId, createdAt(sort: Desc)])
+}
+
+/// A product a reseller is authorised to sell (approved by the Super Admin). Shown on the product page.
+model ResellerProduct {
+  id           String   @id @default(cuid())
+  resellerId   String
+  reseller     Vendor   @relation(fields: [resellerId], references: [id], onDelete: Cascade)
+  softwareId   String
+  software     Software @relation(fields: [softwareId], references: [id], onDelete: Cascade)
+  /// Optional partner tier, e.g. "Gold Partner".
+  partnerLevel String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([resellerId, softwareId])
+  @@index([softwareId])
+}
+
+model VendorSubscription {
+  id                String             @id @default(cuid())
+  vendorId          String
+  vendor            Vendor             @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  planId            String
+  plan              VendorPlan         @relation(fields: [planId], references: [id], onDelete: Restrict)
+  status            SubscriptionStatus @default(PENDING)
+  source            SubscriptionSource @default(RAZORPAY)
+  /// Snapshot at purchase, so later plan edits don't change past records.
+  planName          String
+  interval          BillingInterval
+  amountPaise       Int
+  currency          String             @default("INR")
+  /// Access runs from periodStart to periodEnd. A renewal bought early starts when the current one ends.
+  periodStart       DateTime?
+  periodEnd         DateTime?
+  razorpayOrderId   String?            @unique
+  razorpayPaymentId String?            @unique
+  purchasedById     String?
+  purchasedBy       User?              @relation("SubscriptionPurchaser", fields: [purchasedById], references: [id], onDelete: SetNull)
+  note              String?
+  paidAt            DateTime?
+  cancelledAt       DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  @@index([vendorId, status, periodEnd])
+  @@index([status, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Product offers and favourites. Vendor users favourite any product; when an
+// offer on it goes live, everyone who favourited it is emailed once.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum OfferStatus {
+  /// Proposed by a vendor and waiting for Super Admin approval (or saved as a draft by staff).
+  DRAFT
+  /// Live between startsAt and endsAt.
+  PUBLISHED
+}
+
+model ProductOffer {
+  id           String      @id @default(cuid())
+  softwareId   String
+  software     Software    @relation(fields: [softwareId], references: [id], onDelete: Cascade)
+  title        String
+  /// Short headline such as "20% off" or "Flat ₹5,000 off".
+  discount     String
+  description  String?
+  couponCode   String?
+  terms        String?
+  /// Where to claim it; defaults to the product page.
+  url          String?
+  startsAt     DateTime
+  endsAt       DateTime?
+  status       OfferStatus @default(DRAFT)
+  createdById  String?
+  createdBy    User?       @relation("OfferCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  /// Set once favourite emails have been sent for this offer going live.
+  launchNotifiedAt DateTime?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@index([softwareId, status, startsAt])
+  @@index([status, launchNotifiedAt, startsAt])
+}
+
+model ProductFavourite {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  softwareId String
+  software   Software @relation(fields: [softwareId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  @@unique([userId, softwareId])
+  @@index([softwareId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Classifications: professions, use cases, features, platforms, deployment and
+// licensing models, budget ranges, customer types, operating systems. Each term
+// has a public page (e.g. /use-case/2d-drafting) listing the products tagged with it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum TaxonomyKind {
+  PROFESSION
+  USE_CASE
+  FEATURE
+  PLATFORM
+  DEPLOYMENT_MODEL
+  LICENSING_MODEL
+  BUDGET_RANGE
+  CUSTOMER_TYPE
+  OPERATING_SYSTEM
+}
+
+model TaxonomyTerm {
+  id           String         @id @default(cuid())
+  kind         TaxonomyKind
+  name         String
+  slug         String
+  description  String?
+  /// Page heading; defaults to the taxonomy's pattern, e.g. "Top 2D Drafting Software".
+  headline     String?
+  /// Long-form text shown below the product list (sanitized HTML).
+  content      String?
+  parentId     String?
+  parent       TaxonomyTerm?  @relation("TermTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children     TaxonomyTerm[] @relation("TermTree")
+  sortOrder    Int            @default(0)
+  isActive     Boolean        @default(true)
+  /// Shown prominently in the page hero.
+  promotedSoftwareId String?
+  promotedSoftware   Software?  @relation("TermPromoted", fields: [promotedSoftwareId], references: [id], onDelete: SetNull)
+  promotedBadge      String?
+  /// [{ question, answer }]
+  faqs         Json?
+  seoTitle     String?
+  seoDescription String?
+  noIndex      Boolean        @default(false)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  software     SoftwareTerm[]
+
+  @@unique([kind, slug])
+  @@index([kind, parentId])
+}
+
+model SoftwareTerm {
+  softwareId String
+  termId     String
+  software   Software     @relation(fields: [softwareId], references: [id], onDelete: Cascade)
+  term       TaxonomyTerm @relation(fields: [termId], references: [id], onDelete: Cascade)
+
+  @@id([softwareId, termId])
+  @@index([termId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Geo: Country → State → City → Area locations, and local landing pages for a
+// product or brand in a city/area, e.g. /gurugram/autodesk or /gurugram/software/autocad.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum GeoLevel {
+  COUNTRY
+  STATE
+  CITY
+  AREA
+}
+
+model GeoLocation {
+  id            String        @id @default(cuid())
+  name          String
+  /// Unique across all locations: it is the first part of geo page URLs.
+  slug          String        @unique
+  level         GeoLevel
+  parentId      String?
+  parent        GeoLocation?  @relation("GeoTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children      GeoLocation[] @relation("GeoTree")
+  isPublished   Boolean       @default(true)
+  /// Higher shows first in lists.
+  priority      Int           @default(0)
+  latitude      Float?
+  longitude     Float?
+  pinCodes      String[]      @default([])
+  businessZones String[]      @default([])
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  pages         GeoPage[]
+
+  @@index([level, parentId])
+}
+
+model GeoPage {
+  id          String      @id @default(cuid())
+  locationId  String
+  location    GeoLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  /// Exactly one of softwareId / vendorId is set.
+  softwareId  String?
+  software    Software?   @relation(fields: [softwareId], references: [id], onDelete: Cascade)
+  vendorId    String?
+  vendor      Vendor?     @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  template    String      @default("generic")
+  isPublished Boolean     @default(false)
+  noIndex     Boolean     @default(false)
+  /// { hero, introduction, guide, faqs: [{question, answer}] } — empty sections inherit the template text when `inherit` allows.
+  sections    Json        @default("{}")
+  /// Section keys that fall back to the template text when left empty.
+  inherit     String[]    @default(["hero", "introduction", "guide", "faqs"])
+  seoTitle    String?
+  seoDescription String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@unique([locationId, softwareId])
+  @@unique([locationId, vendorId])
+  @@index([isPublished])
+}
+
+/// A buyer's question about a product. Shown on the product page once a moderator answers and publishes it.
+model ProductQuestion {
+  id           String           @id @default(cuid())
+  softwareId   String
+  software     Software         @relation(fields: [softwareId], references: [id], onDelete: Cascade)
+  userId       String?
+  user         User?            @relation("QuestionAskedBy", fields: [userId], references: [id], onDelete: SetNull)
+  authorName   String
+  question     String
+  answer       String?
+  answeredById String?
+  answeredBy   User?            @relation("QuestionAnsweredBy", fields: [answeredById], references: [id], onDelete: SetNull)
+  answeredAt   DateTime?
+  status       ModerationStatus @default(PENDING)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  @@index([softwareId, status, createdAt])
+  @@index([status])
+  @@index([userId])
+}
+
+/// Recycle bin (Admin → System → Recycle bin): a snapshot of a deleted record and everything deleted
+/// with it, kept for 30 days so it can be restored (src/server/system/trash.ts).
+model TrashItem {
+  id            String   @id @default(cuid())
+  /// Prisma model name of the deleted record, e.g. "Software".
+  entityType    String
+  entityId      String
+  /// Shown in the bin: "Product", "Blog post"…
+  typeLabel     String
+  label         String
+  /// Rows deleted together with it (plans, features, links…).
+  relatedCount  Int      @default(0)
+  snapshot      Json
+  deletedById   String?
+  deletedByName String?
+  deletedAt     DateTime @default(now())
+  /// Removed for good after this.
+  purgeAt       DateTime
+
+  @@index([purgeAt])
+  @@index([typeLabel, deletedAt])
+}
+
+/// In-app notification (the bell), also sent as a browser push to the person's devices.
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Event type, e.g. "lead.new" (see src/server/notifications/catalog.ts).
+  type      String
+  title     String
+  body      String?
+  /// Where clicking it goes, e.g. /admin/leads/<id>.
+  href      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, readAt])
+  @@index([createdAt])
+}
+
+/// A browser/device that accepted push notifications (Web Push subscription).
+model PushSubscription {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  endpoint   String    @unique
+  p256dh     String
+  auth       String
+  userAgent  String?
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
+
+  @@index([userId])
+}
+
+/**
+ * Sign-in protection per email address (kept for unknown addresses too, so the
+ * "attempts remaining" message doesn't reveal which emails have accounts).
+ * Round 1: 3 wrong passwords → 15-minute lock. Round 2: 2 more → 24-hour block,
+ * and every network that tries this email during the block is blocked too.
+ */
+model LoginGuard {
+  email        String    @id
+  /// Wrong passwords in the current round.
+  failed       Int       @default(0)
+  /// 1 = first 3 tries, 2 = the 2 tries after the 15-minute lock.
+  round        Int       @default(1)
+  lockedUntil  DateTime?
+  blockedUntil DateTime?
+  updatedAt    DateTime  @updatedAt
+
+  @@index([updatedAt])
+}
+
+/** A network (IP address, stored as a keyed hash) blocked from signing in. */
+model IpBlock {
+  ipHash    String   @id
+  /// Shortened address for admins (e.g. 203.0.113.x); the full address isn't stored.
+  ipHint    String?
+  until     DateTime
+  /// The email being tried when the block started.
+  email     String?
+  reason    String
+  createdAt DateTime @default(now())
+
+  @@index([until])
+  @@index([email])
+}
+
+/// Website edit mode drafts: unpublished changes made on the live pages (a CMS page's sections, or a
+/// settings section such as website texts or a box's design). Shared by all editors; published or
+/// discarded from the edit bar. Visitors never see them.
+model EditDraft {
+  /// "page:<pageId>" or "setting:<settingKey>"
+  key         String   @id
+  value       Json
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+/// Website edit mode templates: a section, a Free layout row or a whole page's sections saved to
+/// reuse (inserted as copies). Edit bar › Templates.
+model EditTemplate {
+  id          String   @id @default(cuid())
+  name        String
+  /// "section" | "row" | "page"
+  kind        String
+  data        Json
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([kind, name])
+}
+
+// ─── Compliance & Privacy: consent and cookies ──────────────────────────────
+
+/** Why personal data is processed. Necessary purposes support a service the person asked for; the rest are optional consent. */
+model ConsentPurpose {
+  id          String        @id @default(cuid())
+  key         String        @unique
+  name        String
+  description String
+  /// Needed for a service the person asked for: shown as information, never as an optional checkbox.
+  isNecessary Boolean       @default(false)
+  /// Where it's shown: "signup", "enquiry", "account".
+  appliesTo   String[]      @default([])
+  isActive    Boolean       @default(true)
+  sortOrder   Int           @default(0)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  consents    UserConsent[]
+}
+
+enum ConsentStatus {
+  GRANTED
+  WITHDRAWN
+}
+
+/** One consent given for one purpose. Withdrawing closes the record (it's never deleted); giving it again starts a new one. */
+model UserConsent {
+  id             String         @id @default(cuid())
+  userId         String?
+  user           User?          @relation(fields: [userId], references: [id], onDelete: SetNull)
+  /// Lower-case email, also kept for people without an account (enquiries).
+  email          String
+  purposeId      String
+  purpose        ConsentPurpose @relation(fields: [purposeId], references: [id], onDelete: Restrict)
+  status         ConsentStatus  @default(GRANTED)
+  /// Privacy notice version shown when it was given.
+  noticeVersion  String
+  /// signup | enquiry | account | admin
+  source         String
+  grantedAt      DateTime       @default(now())
+  withdrawnAt    DateTime?
+  withdrawSource String?
+  ipHash         String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([userId, purposeId, status])
+  @@index([email, purposeId, status])
+  @@index([purposeId, status])
+  @@index([createdAt])
+}
+
+/** Cookie categories shown in the cookie banner. "necessary" can't be switched off by visitors. */
+model CookieCategory {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  name        String
+  description String
+  isNecessary Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  /// [{ name, provider, duration, purpose }]
+  cookies     Json     @default("[]")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+/** Every cookie choice a visitor saves (history: a new row each time). */
+model CookiePreference {
+  id            String   @id @default(cuid())
+  /// Random id kept in the visitor's consent cookie.
+  visitorId     String
+  userId        String?
+  user          User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  /// { functional: true, analytics: false, … }
+  choices       Json
+  /// accept_all | reject_all | custom
+  action        String
+  noticeVersion String
+  ipHash        String?
+  userAgent     String?
+  createdAt     DateTime @default(now())
+
+  @@index([visitorId, createdAt])
+  @@index([createdAt])
+}
+
+// ─── Compliance & Privacy: legal documents ──────────────────────────────────
+
+/** A legal document (privacy policy, terms…). Its text lives in versions; the public page shows the version in force. */
+model LegalDocument {
+  id                 String                 @id @default(cuid())
+  key                String                 @unique
+  title              String
+  /// Public address: /<slug>. Takes over a Website page with the same address once a version is in force.
+  slug               String                 @unique
+  /// Who must accept it: all | buyer | vendor | reseller
+  audience           String                 @default("all")
+  requiresAcceptance Boolean                @default(false)
+  isActive           Boolean                @default(true)
+  sortOrder          Int                    @default(0)
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  versions           LegalDocumentVersion[]
+  acceptances        LegalAcceptance[]
+}
+
+enum LegalVersionStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+/** One version of a document. Editable only while DRAFT; once published its text can't change (enforced in the database). */
+model LegalDocumentVersion {
+  id                  String             @id @default(cuid())
+  documentId          String
+  document            LegalDocument      @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  version             String
+  status              LegalVersionStatus @default(DRAFT)
+  title               String
+  /// Sanitised HTML.
+  content             String
+  summaryOfChanges    String?
+  /// In force from (a future date schedules it). Set when published.
+  effectiveAt         DateTime?
+  publishedAt         DateTime?
+  publishedById       String?
+  createdById         String?
+  /// Ask people who accepted an earlier version to accept this one.
+  requireReacceptance Boolean            @default(false)
+  legalReviewed       Boolean            @default(false)
+  legalReviewNote     String?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  acceptances         LegalAcceptance[]
+
+  @@unique([documentId, version])
+  @@index([documentId, status, effectiveAt])
+}
+
+/** Who accepted which version, when and where. Never edited. */
+model LegalAcceptance {
+  id         String               @id @default(cuid())
+  userId     String?
+  user       User?                @relation(fields: [userId], references: [id], onDelete: SetNull)
+  email      String
+  documentId String
+  document   LegalDocument        @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  versionId  String
+  version    LegalDocumentVersion @relation(fields: [versionId], references: [id], onDelete: Restrict)
+  /// signup | reacceptance | vendor_onboarding | admin
+  context    String
+  ipHash     String?
+  userAgent  String?
+  acceptedAt DateTime             @default(now())
+
+  @@index([userId, documentId])
+  @@index([versionId])
+  @@index([documentId, acceptedAt])
+}
+
+// ─── Compliance & Privacy: data requests and grievances ─────────────────────
+
+enum PrivacyCaseKind {
+  DATA_REQUEST
+  GRIEVANCE
+  /// Notice about content on the website (copyright, trademark, defamation…).
+  CONTENT_COMPLAINT
+}
+
+enum PrivacyCaseStatus {
+  /// Sent without signing in: waiting for the email link to be confirmed.
+  PENDING_VERIFICATION
+  OPEN
+  IN_PROGRESS
+  AWAITING_REQUESTER
+  RESOLVED
+  REJECTED
+  CLOSED
+}
+
+/** A data request (access, correction, erasure…) or a grievance. Kept as a record; never deleted from the admin. */
+model PrivacyCase {
+  id              String            @id @default(cuid())
+  referenceNo     String            @unique
+  kind            PrivacyCaseKind
+  /// Data request: access | correction | erasure | withdraw_consent | nominate | other.
+  /// Grievance: privacy | account | content | listing | vendor | other.
+  type            String
+  status          PrivacyCaseStatus @default(OPEN)
+  userId          String?
+  user            User?             @relation("PrivacyCaseRequester", fields: [userId], references: [id], onDelete: SetNull)
+  name            String
+  email           String
+  phone           String?
+  subject         String?
+  details         String
+  /// signed_in | email_link | staff
+  verification    String?
+  verifiedAt      DateTime?
+  verifyTokenHash String?           @unique
+  verifyExpiresAt DateTime?
+  /// account | website | admin
+  source          String
+  ipHash          String?
+  assignedToId    String?
+  assignedTo      User?             @relation("PrivacyCaseAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  /// Targets from Compliance settings (empty when no timeline is set there).
+  ackDueAt        DateTime?
+  dueAt           DateTime?
+  acknowledgedAt  DateTime?
+  resolvedAt      DateTime?
+  resolution      String?
+  /// Content complaints: the page or item complained about, and what was done (removed | disabled | edited | no_action).
+  contentUrl      String?
+  declaration     Boolean           @default(false)
+  actionTaken     String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  events          PrivacyCaseEvent[]
+
+  @@index([kind, status, createdAt])
+  @@index([email])
+  @@index([userId])
+  @@index([dueAt])
+}
+
+/** Timeline of a case: status changes, notes, messages to the requester, exports and erasures. */
+model PrivacyCaseEvent {
+  id        String      @id @default(cuid())
+  caseId    String
+  case      PrivacyCase @relation(fields: [caseId], references: [id], onDelete: Restrict)
+  /// created | verified | status | assigned | note | message | export | erasure | consent_withdrawn
+  type      String
+  actorId   String?
+  actor     User?       @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  message   String?
+  /// Internal notes aren't shown to the requester.
+  internal  Boolean     @default(true)
+  metadata  Json?
+  createdAt DateTime    @default(now())
+
+  @@index([caseId, createdAt])
+}
+
+// ─── Compliance & Privacy: retention, incidents, vendor compliance ──────────
+
+/** How long one kind of data is kept. Nothing runs until a period is set and the rule is switched on. */
+model RetentionRule {
+  id             String    @id @default(cuid())
+  /// Which built-in job applies it (see server/services/compliance/retention.ts).
+  key            String    @unique
+  name           String
+  description    String
+  /// delete | anonymise (fixed per job)
+  action         String
+  retentionDays  Int?
+  isActive       Boolean   @default(false)
+  legalReviewed  Boolean   @default(false)
+  legalNote      String?
+  lastRunAt      DateTime?
+  lastRunCount   Int?
+  updatedById    String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+enum IncidentSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum IncidentStatus {
+  OPEN
+  INVESTIGATING
+  CONTAINED
+  RESOLVED
+  CLOSED
+}
+
+/** A security incident or personal data breach, with the reporting decision and what was done. */
+model SecurityIncident {
+  id                   String           @id @default(cuid())
+  referenceNo          String           @unique
+  title                String
+  description          String
+  severity             IncidentSeverity @default(MEDIUM)
+  status               IncidentStatus   @default(OPEN)
+  detectedAt           DateTime
+  occurredAt           DateTime?
+  containedAt          DateTime?
+  resolvedAt           DateTime?
+  personalDataAffected Boolean          @default(false)
+  dataCategories       String[]         @default([])
+  affectedCount        Int?
+  /// Internal target for deciding whether to report (from Compliance settings; empty when not set).
+  decisionDueAt        DateTime?
+  /// undecided | yes | no
+  reportable           String           @default("undecided")
+  decisionNote         String?
+  reportedToBoardAt    DateTime?
+  reportedToCertInAt   DateTime?
+  usersNotifiedAt      DateTime?
+  rootCause            String?
+  remediation          String?
+  reportedById         String?
+  reportedBy           User?            @relation("IncidentReporter", fields: [reportedById], references: [id], onDelete: SetNull)
+  assignedToId         String?
+  assignedTo           User?            @relation("IncidentAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+  events               IncidentEvent[]
+
+  @@index([status, detectedAt])
+}
+
+model IncidentEvent {
+  id         String           @id @default(cuid())
+  incidentId String
+  incident   SecurityIncident @relation(fields: [incidentId], references: [id], onDelete: Restrict)
+  /// created | update | note
+  type       String
+  actorId    String?
+  actor      User?            @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  message    String?
+  changes    Json?
+  createdAt  DateTime         @default(now())
+
+  @@index([incidentId, createdAt])
+}
+
+/** Compliance checks for a vendor or reseller company. */
+model VendorCompliance {
+  id                String    @id @default(cuid())
+  vendorId          String    @unique
+  vendor            Vendor    @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  /// not_started | pending | verified | rejected | not_required
+  kycStatus         String    @default("not_started")
+  kycNote           String?
+  gstinVerified     Boolean   @default(false)
+  /// Data processing agreement or equivalent clauses for leads shared with them.
+  dpaSigned         Boolean   @default(false)
+  dpaSignedAt       DateTime?
+  /// undecided | independent | processor
+  dataRole          String    @default("undecided")
+  lastReviewedAt    DateTime?
+  nextReviewAt      DateTime?
+  notes             String?
+  updatedById       String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+}

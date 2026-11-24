@@ -1,0 +1,70 @@
+# Local or single-server deployment: app + PostgreSQL + MinIO (S3-compatible storage).
+#   docker compose up -d --build
+#   docker compose exec app node node_modules/prisma/build/index.js db seed   # first run only (needs dev deps; see README)
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cadgram
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: cadgram
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cadgram"]
+      interval: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:-cadgram}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY:-change-me-please}
+    volumes: [minio:/data]
+    ports: ["9000:9000", "9001:9001"]
+
+  minio-setup:
+    image: minio/mc:latest
+    depends_on: [minio]
+    entrypoint: >
+      sh -c "sleep 3 && mc alias set local http://minio:9000 $${S3_ACCESS_KEY_ID:-cadgram} $${S3_SECRET_ACCESS_KEY:-change-me-please}
+      && mc mb -p local/cadgram-media && mc anonymous set download local/cadgram-media"
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db: { condition: service_healthy }
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://cadgram:${POSTGRES_PASSWORD:-change-me}@db:5432/cadgram
+      DIRECT_DATABASE_URL: postgresql://cadgram:${POSTGRES_PASSWORD:-change-me}@db:5432/cadgram
+      STORAGE_DRIVER: s3
+      S3_ENDPOINT: http://minio:9000
+      S3_FORCE_PATH_STYLE: "true"
+      S3_BUCKET: cadgram-media
+      STORAGE_PUBLIC_URL: ${STORAGE_PUBLIC_URL:-http://localhost:9000/cadgram-media}
+    ports: ["3000:3000"]
+
+  # Runs scheduled jobs every 5 minutes.
+  cron:
+    image: curlimages/curl:latest
+    depends_on: [app]
+    env_file: .env
+    entrypoint: ["sh", "-c", "while true; do curl -fsS -H \"Authorization: Bearer $$CRON_SECRET\" http://app:3000/api/cron || true; sleep 300; done"]
+
+  # Local email testing (development only): catches every email; inbox at http://localhost:8025.
+  # Start with: docker compose --profile dev up -d mailpit   (SMTP on localhost:1025)
+  mailpit:
+    image: axllent/mailpit:latest
+    profiles: ["dev"]
+    restart: unless-stopped
+    environment:
+      MP_MAX_MESSAGES: 500
+    ports: ["1025:1025", "8025:8025"]
+
+volumes:
+  pgdata:
+  minio:
