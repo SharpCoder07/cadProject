@@ -67,13 +67,13 @@ export const settingSchemas = {
     headerStyle: z.enum(["standard", "compact"]).default("standard"),
     showAnnouncementBar: z.boolean().default(true),
     /**
-     * Colour of standard announcements: Primary, Accent (e.g. Certinal's lime strip), or automatic: Accent when
+     * Colour of standard announcements: Primary, Accent (e.g. a lime strip), or automatic: Accent when
      * the Primary colour is nearly black (it would look like a black bar), otherwise Primary.
      */
     announcementColor: z.enum(["auto", "primary", "accent"]).default("auto"),
     /** Website animations (app/motion.css): full, subtle (reveals and count-ups only) or off. */
     animations: z.enum(["full", "subtle", "off"]).default("full"),
-    /** Whole-site design: classic, or "design1" (modelled on certinal.com, app/design1.css). */
+    /** Whole-site design: classic, or "design1" (Fresh Lime Design, app/design1.css). */
     design: z.enum(["classic", "design1"]).default("classic"),
     footerNote: optionalStr(300).default("Prices are indicative and may exclude GST. Confirm final pricing with the vendor."),
   }),
@@ -340,6 +340,35 @@ export const settingSchemas = {
     cookieBannerEnabled: z.boolean().default(true),
     /** How long the browser remembers a visitor's cookie choice before asking again. */
     consentCookieDays: z.number().int().min(1).max(730).default(180),
+  }),
+  /** Help chat: the guided chatbot on the website (no AI). Answers come from the FAQs and the catalogue. */
+  chat: z.object({
+    enabled: z.boolean().default(true),
+    /** Heading of the chat window. */
+    title: z.string().trim().min(1).max(60).default("Need help choosing?"),
+    /** First message the visitor sees. */
+    greeting: optionalStr(500).default("Hi! I can help you find the right software, compare products or answer questions about Cadgram. Pick a topic below or type your question."),
+    /** Buttons under the greeting. "answer" shows the text; "search" asks the chat; "link" opens the page; "expert" opens the enquiry form; "whatsapp" opens WhatsApp. */
+    quickReplies: z
+      .array(
+        z.object({
+          label: z.string().trim().min(1).max(60),
+          action: z.enum(["answer", "search", "link", "expert", "whatsapp"]).default("answer"),
+          answer: optionalStr(1000),
+          href: link,
+        }),
+      )
+      .max(8)
+      .default([
+        { label: "Help me choose software", action: "answer", answer: "Tell me what you need, for example “GST billing for a shop” or “CRM for a sales team of 10”, and I’ll point you to the right categories and products. You can also talk to one of our software experts for free advice.", href: "" },
+        { label: "Compare products", action: "link", answer: "Compare prices, features and reviews of up to three products side by side.", href: "/compare" },
+        { label: "List my software on Cadgram", action: "link", answer: "Software companies can list their products and get enquiries from buyers.", href: "/list-your-software" },
+        { label: "Talk to an expert", action: "expert", answer: "", href: "" },
+      ]),
+    /** Offer a WhatsApp chat (uses the WhatsApp number in Company & contact). */
+    whatsapp: z.boolean().default(true),
+    whatsappMessage: optionalStr(300).default("Hi Cadgram, I need help choosing software."),
+    showOnMobile: z.boolean().default(true),
   }),
   /** Admin › Logs › Error logs. */
   errorLogs: z.object({

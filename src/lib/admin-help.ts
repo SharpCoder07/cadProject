@@ -58,6 +58,7 @@ const HELP: Record<string, AdminHelp> = {
 const KEYS = Object.keys(HELP).sort((a, b) => b.length - a.length);
 
 export function helpFor(pathname: string, search?: string): AdminHelp | null {
+  if (pathname === "/admin/settings" && search?.includes("tab=chat")) return { what: "The help chat button on the website: on or off, welcome message and quick buttons. Its answers come from your FAQs.", site: "/" };
   if (pathname === "/admin/settings" && search?.includes("tab=theme")) return { what: "The look of the website: design (Classic or Fresh Lime), colours, fonts and animations.", site: "/" };
   const key = KEYS.find((k) => (k === "/admin" ? pathname === "/admin" : pathname === k || pathname.startsWith(`${k}/`)));
   return key ? HELP[key]! : null;

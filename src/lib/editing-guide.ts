@@ -95,6 +95,15 @@ export const EDITING_GUIDE: GuideGroup[] = [
         row("Visitors' choices (log)", S.cookies, undefined, "Cookie choices table"),
         row("Analytics and marketing scripts", S.integrations, undefined, "IDs there; they only load after a visitor allows them here"),
       ] },
+      { name: "Help chat", url: "every page (round button, bottom right)", start: S.settings("chat"), rows: [
+        row("Turn the chat on or off, show it on phones", S.settings("chat"), "Help chat"),
+        row("Heading, welcome message and quick buttons", S.settings("chat"), "Help chat", "Each button shows an answer, opens a page, asks the chat, opens the expert form or WhatsApp"),
+        row("The answers it gives", S.faqs, undefined, "It answers from your active FAQs, and suggests matching categories and products"),
+        row("WhatsApp number and expert hours", S.settings("site"), "Company & contact", "WhatsApp number and Business hours"),
+        row("Starting WhatsApp message", S.settings("chat"), "Help chat"),
+        row("Small wording: placeholder, “Talk to an expert”, “no answer” message", S.texts("chat")),
+        row("Enquiries sent from the chat", S.leads(), undefined, "Source “Get advice”"),
+      ] },
       { name: "Look and feel", url: "whole website", start: S.design, rows: [
         row("Colours, fonts, corner style", S.design),
         row("Design: Classic or Fresh Lime Design (Lime or Teal)", S.design, undefined, "Click a preset button at the top, or choose in the Website design field"),

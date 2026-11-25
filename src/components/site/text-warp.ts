@@ -1,5 +1,5 @@
 /**
- * "Text warp" hover effect for big headings (inspired by certinal.com's hero): around the pointer the heading's
+ * "Text warp" hover effect for big headings: around the pointer the heading's
  * letters dissolve into small particles in the theme's colours that swirl away from the cursor and flow back
  * into place when it moves on. Used on elements with data-textwarp (the homepage hero heading).
  *

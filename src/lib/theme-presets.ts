@@ -15,23 +15,22 @@ export const THEME_PRESETS: ThemePreset[] = [
   {
     key: "lime-forest-green",
     name: "Lime & Forest Green Color theme",
-    description: "certinal.com's palette, colour for colour: white pages, near-black text, deep green (#00301E) for highlights and main buttons, lime (#CDF757) for the call-to-action buttons, their brand green for success, 10px buttons and rounded cards.",
+    description: "White pages, near-black text, deep green (#00301E) for highlights and main buttons, lime (#CDF757) for the call-to-action buttons, a bright green for success, 10px buttons and rounded cards.",
     colors: {
-      primary: "#00301E", // their "green ink": eyebrows, highlighted text, dark buttons
-      accent: "#CDF757", // their lime call-to-action buttons (dark text on them)
-      ink: "#141415", // their headings and body text
-      background: "#FFFFFF", // their page background
-      surface: "#FFFFFF", // their cards are white with a fine border
-      success: "#01B46D", // their brand green
+      primary: "#00301E", // "green ink": eyebrows, highlighted text, dark buttons
+      accent: "#CDF757", // lime call-to-action buttons (dark text on them)
+      ink: "#141415", // headings and body text
+      background: "#FFFFFF", // page background
+      surface: "#FFFFFF", // white cards with a fine border
+      success: "#01B46D", // bright green
     },
-    // Certinal uses Switzer, which isn't one of the site's fonts; Inter is the closest match.
-    // Their announcement strip is lime with dark text.
+    // Inter for headings and text; the announcement strip is lime with dark text.
     design: { displayFont: "inter", bodyFont: "inter", radius: "round", announcementColor: "accent" },
   },
   {
     key: "design-1",
     name: "Fresh Lime Design · Lime",
-    description: "The whole website in a design modelled on certinal.com: the Lime & Forest Green Color theme colours, white pages, lime buttons with 10px corners, a translucent header, gradient green numbers and accent words, soft lime-tinted sections, white cards with a fine border and green shadow, a lime call-to-action panel and a light footer — plus full animations. Your pages and content stay the same.",
+    description: "The whole website in a fresh lime design: the Lime & Forest Green Color theme colours, white pages, lime buttons with 10px corners, a translucent header, gradient green numbers and accent words, soft lime-tinted sections, white cards with a fine border and green shadow, a lime call-to-action panel and a light footer — plus full animations. Your pages and content stay the same.",
     colors: { primary: "#00301E", accent: "#CDF757", ink: "#141415", background: "#FFFFFF", surface: "#FFFFFF", success: "#01B46D" },
     design: { displayFont: "inter", bodyFont: "inter", radius: "round", announcementColor: "accent", design: "design1", animations: "full" },
   },

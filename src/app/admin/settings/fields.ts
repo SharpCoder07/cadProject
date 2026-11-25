@@ -140,6 +140,30 @@ export const SETTINGS_TABS: { key: SettingKey; label: string; description: strin
     })),
   },
   {
+    key: "chat", label: "Help chat",
+    description: "The chat button at the bottom right of the website. It answers from your FAQs (Website & content › FAQs) and suggests matching categories and products; no AI is used. Visitors who want a person can send an enquiry (it arrives in Sales › Leads) or open WhatsApp. Small wording such as the input placeholder is in Pages › Website texts › Help chat.",
+    fields: [
+      sw("enabled", "Show the help chat", "Off removes the chat button from every page."),
+      { name: "title", label: "Chat heading", type: "text" },
+      { name: "greeting", label: "Welcome message", type: "textarea", hint: "The first message visitors see." },
+      { name: "quickReplies", label: "Quick buttons", type: "list", addLabel: "Add button", hint: "Up to 8 buttons under the welcome message, in this order.", fields: [
+        { name: "label", label: "Button text", type: "text" },
+        { name: "action", label: "What it does", type: "select", options: [
+          { value: "answer", label: "Show the answer below" },
+          { value: "search", label: "Ask the chat (searches FAQs and products for the button text)" },
+          { value: "link", label: "Show the answer below with a link to the page" },
+          { value: "expert", label: "Open the “Talk to an expert” enquiry form" },
+          { value: "whatsapp", label: "Open WhatsApp" },
+        ] },
+        { name: "answer", label: "Answer", type: "textarea", hint: "For “Show the answer” and “link” buttons." },
+        { name: "href", label: "Link", type: "url", placeholder: "/compare", hint: "For “link” buttons: a page on this site (/compare) or a full https:// address." },
+      ] },
+      sw("whatsapp", "Offer WhatsApp", "Shows a WhatsApp button next to “Talk to an expert”. Uses the WhatsApp number in Company & contact; hidden when that is empty."),
+      { name: "whatsappMessage", label: "WhatsApp starting message", type: "textarea", hint: "Typed in for the visitor when WhatsApp opens; they can change it before sending." },
+      sw("showOnMobile", "Show on phones", "Off hides the chat button on small screens."),
+    ],
+  },
+  {
     key: "moderation", label: "Moderation", description: "Block abusive words in everything people post.",
     fields: [
       sw("blockWords", "Block abusive words", "Reviews, questions, answers, enquiries, sign-up names and vendor text are checked. 180 English, Hindi and Hinglish words are blocked by default."),

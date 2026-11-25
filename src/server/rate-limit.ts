@@ -35,6 +35,8 @@ export const RULES = {
   privacyCase: { name: "privacy-case:ip", limit: 5, windowSeconds: 60 * 60 },
   /** "Download my data": 5 per person an hour. */
   dataExport: { name: "data-export:user", limit: 5, windowSeconds: 60 * 60 },
+  /** Help chat questions on the website: 40 per network every 10 minutes. */
+  chat: { name: "chat:ip", limit: 40, windowSeconds: 10 * 60 },
 } satisfies Record<string, RateLimitRule>;
 
 export interface RateLimitResult {

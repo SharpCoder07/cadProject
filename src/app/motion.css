@@ -1,5 +1,5 @@
 /*
- * Website motion (reference: certinal.com): scroll reveals with stagger, hero lift-in, glowing hero rings, rotating
+ * Website motion: scroll reveals with stagger, hero lift-in, glowing hero rings, rotating
  * glow borders on main buttons, a light sweep over headings, count-up numbers, a scroll-filled progress rail,
  * logo marquee and live pulses. Controlled by Website settings › Design & theme › Animations
  * (data-motion="full" | "subtle" | "off" on the site wrapper); "subtle" keeps only reveals and count-ups.
@@ -462,3 +462,9 @@ html.rv-ready [data-motion="full"] .cg-geo-map:not(.is-play) :is(.cg-pin, .cg-pi
 @keyframes cgAuthIcon { 0%, 20%, 100% { box-shadow: 0 0 0 0 rgb(var(--color-accent) / 0); background-color: rgb(255 255 255 / 0.1); } 8% { box-shadow: 0 0 0 6px rgb(var(--color-accent) / 0.16); background-color: rgb(255 255 255 / 0.18); } }
 @keyframes cgAuthGlow { 0%, 100% { translate: 0 0; scale: 1; } 50% { translate: 24px 18px; scale: 1.08; } }
 @media (prefers-reduced-motion: reduce) { .cg-auth-doodles, .cg-auth-in *, .cg-auth-in > *, .cg-auth-glow { animation: none !important; } }
+
+/* Help chat (components/site/help-chat.tsx): the window rises in, and the "looking it up" dots bounce. */
+@keyframes cgChatIn { from { opacity: 0; transform: translateY(12px) scale(0.98); } to { opacity: 1; transform: none; } }
+@keyframes cgChatDot { 0%, 60%, 100% { opacity: 0.35; transform: none; } 30% { opacity: 1; transform: translateY(-3px); } }
+.cg-chat-panel { animation: cgChatIn 0.22s ease-out; transform-origin: bottom right; }
+.cg-chat-dot { animation: cgChatDot 1s ease-in-out infinite; }

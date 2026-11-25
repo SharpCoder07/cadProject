@@ -42,12 +42,14 @@ export function CompareTray({ ctaLabel }: { ctaLabel: string }) {
   // Leave room under the footer equal to the bar's height, so the bar never hides the footer's last line.
   useEffect(() => {
     const el = bar.current;
-    if (!visible || !el) return setHeight(0);
-    const update = () => setHeight(el.offsetHeight);
+    // --cg-tray-h lets the help chat button sit above the bar.
+    const root = document.documentElement.style;
+    if (!visible || !el) { root.setProperty("--cg-tray-h", "0px"); return setHeight(0); }
+    const update = () => { setHeight(el.offsetHeight); root.setProperty("--cg-tray-h", `${el.offsetHeight}px`); };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => { ro.disconnect(); root.setProperty("--cg-tray-h", "0px"); };
   }, [visible]);
   // The compare page has its own product slots.
   if (!visible) return null;

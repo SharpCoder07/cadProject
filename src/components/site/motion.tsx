@@ -120,7 +120,7 @@ function countUp(el: HTMLElement) {
 }
 
 /**
- * Logo marquees (.cg-marquee wrapping a <ul>), like certinal.com's client logos: the row scrolls endlessly at an
+ * Logo marquees (.cg-marquee wrapping a <ul>): the row scrolls endlessly at an
  * even speed, fades at both edges and pauses on hover. With data-rows="2" and 8+ logos, a second row (starting
  * halfway through the list) moves the other way. Copies made for the loop are hidden from screen readers and keyboard.
  */

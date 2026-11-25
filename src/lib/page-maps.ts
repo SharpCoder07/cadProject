@@ -75,6 +75,15 @@ export const FOOTER_SECTIONS: MapSection[] = [
       row("Show the banner, how long a choice is remembered", S.cookies, undefined, "Banner section"),
     ],
   },
+  {
+    title: "Help chat (round button, bottom right)", shared: "footer", edit: S.settings("chat"),
+    summary: "Floats over every page. Answers from the FAQs and the catalogue; no AI.",
+    rows: [
+      row("On or off, heading, welcome message, quick buttons", S.settings("chat"), "Help chat"),
+      row("Answers", S.faqs, undefined, "Active FAQs"),
+      row("Small wording", S.texts("chat")),
+    ],
+  },
 ];
 
 const HOME = S.home;

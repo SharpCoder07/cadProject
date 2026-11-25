@@ -23,7 +23,7 @@ export async function generateMetadata({ searchParams }: Props): Promise<Metadat
 }
 
 /**
- * Software brands directory, styled after certinal.com's knowledge hub: a centred hero on a soft accent wash
+ * Software brands directory: a centred hero on a soft accent wash
  * with rings and live figures, then cards with a graphic banner (logo tile, accent arcs, product count),
  * name, the brand's top three products and a "view" link — 16 per page, with search — and a closing
  * call to action for software makers. Banner and ring styles: app/design1.css (.cg-brands, .cg-brand-*, .cg-bh-rings, .cg-card-rings); they use the theme's
@@ -62,7 +62,7 @@ export default async function BrandsIndex({ searchParams }: Props) {
   return (
     <EditRegion label="All brands" live={{ kind: "brands", id: "all", section: "all", title: "Brands" }} actions={[{ label: "Open in admin", href: "/admin/brands" }, { label: "Wording", href: "/admin/cms/texts?group=brands" }]}>
     <div className="cg-brands">
-      {/* Hero (reference: certinal.com knowledge hub): centred on a soft accent wash, a pill label, big rings on the right. */}
+      {/* Hero: centred on a soft accent wash, a pill label, big rings on the right. */}
       <section className="relative overflow-hidden border-b border-line bg-[linear-gradient(115deg,rgb(var(--bd)/0.07)_0%,rgb(var(--color-surface))_45%,rgb(var(--bd)/0.16)_100%)]">
         <div aria-hidden className="cg-bh-rings pointer-events-none absolute -right-[14%] top-1/2 hidden aspect-square w-[min(560px,50vw)] -translate-y-1/2 rounded-full md:block" />
         <div aria-hidden className="cg-bh-rings cg-bh-rings-sm pointer-events-none absolute -left-[8%] -bottom-[40%] hidden aspect-square w-[min(340px,34vw)] rounded-full opacity-40 md:block" />

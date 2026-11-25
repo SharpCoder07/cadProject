@@ -1,5 +1,5 @@
 /*
- * "Design 1": a whole-site look modelled on certinal.com (Website settings › Design & theme › Ready-made designs).
+ * "Design 1": the Fresh Lime whole-site look (Website settings › Design & theme › Ready-made designs).
  * Turned on by data-design="design1" on the site wrapper; every rule is scoped to it, so the classic design is
  * untouched. Uses the theme colours (Design 1 sets the Lime & Forest Green palette) plus a few fixed tints from
  * the reference: page #FFFFFF, soft section #FDFFF7 / #F5F7FC, hairline #DBDEE3, footer #FAFAFA.
@@ -121,7 +121,7 @@
 [data-design="design1"] .cg-logo-dark { display: none; }
 
 
-/* ── Brands page (any design; styled after certinal.com's knowledge hub) ── */
+/* ── Brands page (any design): centred hero on a soft accent wash ── */
 /* Decoration colour: the theme's main colour (teal, green…); Design 1 uses its lime accent like the reference.
    --bd-ink is a deeper shade for small dots and icons. */
 .cg-brands { --bd: var(--color-primary); --bd-ink: var(--color-primary); }

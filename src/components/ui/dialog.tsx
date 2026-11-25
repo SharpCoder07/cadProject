@@ -7,7 +7,7 @@ import { useBinDays, useDeleteNotAllowed, useIsSuperAdmin } from "./delete-right
 import { NO_DELETE_MESSAGE, RECYCLE_BIN_CONFIRM } from "@/lib/delete-permission";
 
 /** Accessible modal built on the native <dialog> element (focus trap, Esc, backdrop). */
-export function Dialog({ open, onClose, title, description, children, size = "md", className }: { open: boolean; onClose: () => void; title: ReactNode; description?: ReactNode; children: ReactNode; size?: "sm" | "confirm" | "md" | "lg" | "xl"; className?: string }) {
+export function Dialog({ open, onClose, title, description, children, size = "md", className, showScrollbar }: { open: boolean; onClose: () => void; title: ReactNode; description?: ReactNode; children: ReactNode; size?: "sm" | "confirm" | "md" | "lg" | "xl"; className?: string; /** Show the thin scrollbar (app/globals.css "show-scrollbar") when the content is taller than the window. */ showScrollbar?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const el = ref.current;
@@ -36,7 +36,7 @@ export function Dialog({ open, onClose, title, description, children, size = "md
       aria-labelledby="dialog-title"
     >
       {open && (
-        <div className="max-h-[85vh] overflow-y-auto">
+        <div className={cn("max-h-[85vh] overflow-y-auto", showScrollbar && "show-scrollbar")}>
           <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-line bg-surface px-5 py-4">
             <div>
               <h2 id="dialog-title" className="font-sans text-lg font-semibold">{title}</h2>

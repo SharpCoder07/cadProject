@@ -124,7 +124,7 @@ export function CookieConsent({ categories, version, days, bannerOn, analytics, 
         <div role="status" className="fixed bottom-4 left-1/2 z-[61] -translate-x-1/2 rounded-full bg-ink px-4 py-2 text-sm font-medium text-white shadow-lg">{t("cookies.saved")}</div>
       )}
 
-      <Dialog open={open} onClose={() => setOpen(false)} title={t("cookies.dialogTitle")} description={t("cookies.dialogText")} size="md">
+      <Dialog open={open} onClose={() => setOpen(false)} title={t("cookies.dialogTitle")} description={t("cookies.dialogText")} size="md" showScrollbar>
         <ul className="space-y-3">
           {categories.map((c) => {
             const on = c.isNecessary || draft[c.key] === true;

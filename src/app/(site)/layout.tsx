@@ -6,6 +6,7 @@ import { CompareProvider } from "@/components/site/compare-context";
 import { CompareTray } from "@/components/site/compare-controls";
 import { LeadDialogProvider } from "@/components/site/lead-dialog";
 import { CookieConsent } from "@/components/site/cookie-consent";
+import { HelpChat } from "@/components/site/help-chat";
 import { publicCookieCategories } from "@/server/services/compliance/cookies";
 import { JsonLd } from "@/components/site/json-ld";
 import { EditModeProvider } from "@/components/site/edit-mode";
@@ -34,6 +35,8 @@ export default async function SiteLayout({ children }: { children: React.ReactNo
           <EditModeProvider styles={settings.regionStyles}>
             {/* Animations setting (Design & theme): styles in app/motion.css, runtime in components/site/motion.tsx. */}
             <div
+              // Marks the public website, so its page scrollbar can be shown thin (app/globals.css).
+              data-site-root=""
               data-motion={motion}
               data-design={settings.theme.design ?? "classic"}
               // Fresh Lime Design uses the reference's exact greens with the Lime & Forest Green Color theme, else the theme's own colours.
@@ -47,6 +50,8 @@ export default async function SiteLayout({ children }: { children: React.ReactNo
             <SiteMotion level={motion} />
           </EditModeProvider>
           <CompareTray ctaLabel={labels.compareCta} />
+          {/* Help chat (Website settings › Help chat): answers from the FAQs and the catalogue; older cached settings may not have it yet. */}
+          {(settings.chat?.enabled ?? true) && settings.chat && <HelpChat config={settings.chat} whatsappNumber={site.whatsappNumber} businessHours={site.businessHours} />}
         </LeadDialogProvider>
       </CompareProvider>
       {/* Cookie banner + tracking scripts, which only load after the visitor allows them (Compliance & Privacy › Cookies). */}
